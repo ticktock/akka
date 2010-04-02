@@ -59,7 +59,9 @@ private [akka] object RedisStorageBackend extends
         // with cluster
         import com.redis.cluster._
         println("Running suite on Redis cluster")
-        new RedisCluster(nodes: _*)
+        new RedisCluster(nodes: _*) {
+          val keyTag = Some(NoOpKeyTag)
+        }
     }
   
   /**
