@@ -44,10 +44,23 @@ private [akka] object RedisStorageBackend extends
   SortedSetStorageBackend[Array[Byte]] with
   Logging {
     
-  val REDIS_SERVER_HOSTNAME = config.getString("akka.storage.redis.hostname", "127.0.0.1")
-  val REDIS_SERVER_PORT = config.getInt("akka.storage.redis.port", 6379)
+  // need an explicit definition in akka-conf
+  val nodes = config.getList("akka.storage.redis.cluster")
 
-  val db = new RedisClient(REDIS_SERVER_HOSTNAME, REDIS_SERVER_PORT)
+  val db = 
+    nodes match {
+      case Array() =>
+        // no cluster defined
+        val REDIS_SERVER_HOSTNAME = config.getString("akka.storage.redis.hostname", "127.0.0.1")
+        val REDIS_SERVER_PORT = config.getInt("akka.storage.redis.port", 6379)
+        new RedisClient(REDIS_SERVER_HOSTNAME, REDIS_SERVER_PORT)
+
+      case s =>
+        // with cluster
+        import com.redis.cluster._
+        println("Running suite on Redis cluster")
+        new RedisCluster(nodes: _*)
+    }
   
   /**
    * Map storage in Redis.
@@ -107,16 +120,16 @@ private [akka] object RedisStorageBackend extends
   }
 
   def removeMapStorageFor(name: String): Unit = withErrorHandling {
-    db.keys("%s:*".format(encode(name.getBytes))) match {
+    db.keys("%s:*".format(new String(encode(name.getBytes)))) match {
       case None =>
         throw new Predef.NoSuchElementException(name + " not present")
       case Some(keys) =>
-        keys.foreach(db.delete(_))
+        keys.foreach(db.del(_))
     }
   }
 
   def removeMapStorageFor(name: String, key: Array[Byte]): Unit = withErrorHandling {
-    db.delete(makeRedisKey(name, key))
+    db.del(makeRedisKey(name, key))
   }
     
   def getMapStorageEntryFor(name: String, key: Array[Byte]): Option[Array[Byte]] = withErrorHandling {
@@ -333,7 +346,7 @@ private [akka] object RedisStorageBackend extends
   
   // completely delete the queue
   def remove(name: String): Boolean = withErrorHandling {
-    db.delete(new String(encode(name.getBytes))) match {
+    db.del(new String(encode(name.getBytes))) match {
       case Some(1) => true
       case _ => false
     }
