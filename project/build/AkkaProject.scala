@@ -336,7 +336,6 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
     lazy val dist = deployTask(info, distPath, true, true, true) dependsOn(`package`, packageDocs, packageSrc) describedAs("Deploying")
   }
 
-  // examples
   class AkkaFunTestProject(info: ProjectInfo) extends DefaultProject(info) {
     val jackson_core_asl = "org.codehaus.jackson" % "jackson-core-asl" % "1.2.1" % "compile"
     val stax_api = "javax.xml.stream" % "stax-api" % "1.0-2" % "compile"
@@ -348,6 +347,7 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
     // testing
     val junit = "junit" % "junit" % "4.5" % "test"
     val jmock = "org.jmock" % "jmock" % "2.4.0" % "test"
+    override def testOptions = TestFilter((name: String) => name.endsWith("Test")) :: Nil
   }
 
   class AkkaSampleChatProject(info: ProjectInfo) extends DefaultProject(info) {
