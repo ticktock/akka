@@ -101,9 +101,6 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
     akka_core, akka_rest, akka_spring, akka_camel, akka_persistence, 
     akka_cluster, akka_amqp, akka_security, akka_comet, akka_patterns)
 
-  // functional tests in java
-  lazy val akka_fun_test = project("akka-fun-test-java", "akka-fun-test-java", new AkkaFunTestProject(_), akka_kernel)
-
   // examples
   lazy val akka_samples = project("akka-samples", "akka-samples", new AkkaSamplesParentProject(_))
 
@@ -148,7 +145,6 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
   // ------------------------------------------------------------
   // publishing
   override def managedStyle = ManagedStyle.Maven
-  //override def defaultPublishRepository = Some(Resolver.file("maven-local", Path.userHome / ".m2" / "repository" asFile))
   val publishTo = Resolver.file("maven-local", Path.userHome / ".m2" / "repository" asFile)
 
   val sourceArtifact = Artifact(artifactID, "src", "jar", Some("src"), Nil, None)
@@ -334,20 +330,6 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
     val scalatest = "org.scalatest" % "scalatest" % SCALATEST_VERSION % "test"
     val junit = "junit" % "junit" % "4.5" % "test"
     lazy val dist = deployTask(info, distPath, true, true, true) dependsOn(`package`, packageDocs, packageSrc) describedAs("Deploying")
-  }
-
-  class AkkaFunTestProject(info: ProjectInfo) extends DefaultProject(info) {
-    val jackson_core_asl = "org.codehaus.jackson" % "jackson-core-asl" % "1.2.1" % "compile"
-    val stax_api = "javax.xml.stream" % "stax-api" % "1.0-2" % "compile"
-    val protobuf = "com.google.protobuf" % "protobuf-java" % "2.2.0" % "compile"
-    val grizzly = "com.sun.grizzly" % "grizzly-comet-webserver" % "1.9.18-i" % "compile"
-    val jersey_server = "com.sun.jersey" % "jersey-server" % JERSEY_VERSION % "compile"
-    val jersey_json = "com.sun.jersey" % "jersey-json" % JERSEY_VERSION % "compile"
-    val jersey_atom = "com.sun.jersey" % "jersey-atom" % JERSEY_VERSION % "compile"
-    // testing
-    val junit = "junit" % "junit" % "4.5" % "test"
-    val jmock = "org.jmock" % "jmock" % "2.4.0" % "test"
-    override def testOptions = TestFilter((name: String) => name.endsWith("Test")) :: Nil
   }
 
   class AkkaSampleChatProject(info: ProjectInfo) extends DefaultProject(info) {

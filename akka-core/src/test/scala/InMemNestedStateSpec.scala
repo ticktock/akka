@@ -51,9 +51,11 @@ class InMemoryNestedStateSpec extends
 
     it("map should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setMapState("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "init") // set init state
       Thread.sleep(100)
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       nested.setMapState("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "init") // set init state
       Thread.sleep(100)
       stateful.success("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "new state", nested) // transactionrequired
@@ -64,9 +66,11 @@ class InMemoryNestedStateSpec extends
 
     it("map should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setMapState("testShouldRollbackStateForStatefulServerInCaseOfFailure", "init") // set init state
       Thread.sleep(100)
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       nested.setMapState("testShouldRollbackStateForStatefulServerInCaseOfFailure", "init") // set init state
       Thread.sleep(100)
       val failer = conf.getInstance(classOf[InMemFailer])
@@ -82,9 +86,11 @@ class InMemoryNestedStateSpec extends
 
     it("vector should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setVectorState("init") // set init state
       Thread.sleep(100)
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       Thread.sleep(100)
       nested.setVectorState("init") // set init state
       Thread.sleep(100)
@@ -97,9 +103,11 @@ class InMemoryNestedStateSpec extends
 
     it("vector should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setVectorState("init") // set init state
       Thread.sleep(100)
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       nested.setVectorState("init") // set init state
       Thread.sleep(100)
       val failer = conf.getInstance(classOf[InMemFailer])
@@ -115,7 +123,9 @@ class InMemoryNestedStateSpec extends
 
     it("ref should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       stateful.setRefState("init") // set init state
       Thread.sleep(100)
       nested.setRefState("init") // set init state
@@ -129,7 +139,9 @@ class InMemoryNestedStateSpec extends
 
     it("ref should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       val nested = conf.getInstance(classOf[InMemStatefulNested])
+      nested.init
       stateful.setRefState("init") // set init state
       Thread.sleep(100)
       nested.setRefState("init") // set init state

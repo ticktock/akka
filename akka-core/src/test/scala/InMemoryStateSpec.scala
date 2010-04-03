@@ -49,6 +49,7 @@ class InMemoryStateSpec extends
 
     it("map should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setMapState("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "init")
       stateful.success("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "new state")
       stateful.getMapState("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess") should equal("new state")
@@ -56,6 +57,7 @@ class InMemoryStateSpec extends
 
     it("map should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setMapState("testShouldRollbackStateForStatefulServerInCaseOfFailure", "init")
       val failer = conf.getInstance(classOf[InMemFailer])
       try {
@@ -67,6 +69,7 @@ class InMemoryStateSpec extends
 
     it("vector should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setVectorState("init") // set init state
       val failer = conf.getInstance(classOf[InMemFailer])
       try {
@@ -78,6 +81,7 @@ class InMemoryStateSpec extends
 
     it("vector should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setVectorState("init") // set init state
       stateful.success("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "new state")
       stateful.getVectorState should equal("new state")
@@ -85,6 +89,7 @@ class InMemoryStateSpec extends
 
     it("ref should rollback state for stateful server in case of failure") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setRefState("init") // set init state
       val failer = conf.getInstance(classOf[InMemFailer])
       try {
@@ -96,6 +101,7 @@ class InMemoryStateSpec extends
 
     it("ref should not rollback state for stateful server in case of success") {
       val stateful = conf.getInstance(classOf[InMemStateful])
+      stateful.init
       stateful.setRefState("init") // set init state
       stateful.success("testShouldNotRollbackStateForStatefulServerInCaseOfSuccess", "new state") 
       stateful.getRefState should equal("new state")
