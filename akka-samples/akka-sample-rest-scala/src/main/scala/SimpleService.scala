@@ -2,7 +2,7 @@
  * Copyright (C) 2009-2010 Scalable Solutions AB <http://scalablesolutions.se>
  */
 
-package sample.scala
+package sample.rest.scala
 
 import se.scalablesolutions.akka.actor.{Transactor, SupervisorFactory, Actor}
 import se.scalablesolutions.akka.stm.TransactionalState
@@ -50,7 +50,7 @@ class Boot {
  */
 @Path("/scalacount")
 class SimpleService extends Transactor {
-  
+
   case object Tick
   private val KEY = "COUNTER"
   private var hasStartedTicking = false
@@ -127,7 +127,7 @@ class PersistentSimpleService extends Transactor {
 }
 
 @Path("/chat")
-class Chat extends Actor {
+class Chat extends Actor with Logging {
   case class Chat(val who: String, val what: String, val msg: String)
 
   @Suspend

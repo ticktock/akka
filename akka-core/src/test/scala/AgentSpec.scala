@@ -2,7 +2,7 @@ package se.scalablesolutions.akka.actor
 
 import _root_.java.util.concurrent.TimeUnit
 import se.scalablesolutions.akka.actor.Actor.transactor
-import se.scalablesolutions.akka.stm.Transaction.atomic
+import se.scalablesolutions.akka.stm.Transaction.Global.atomic
 import se.scalablesolutions.akka.util.Logging
 
 import org.scalatest.Suite
@@ -13,7 +13,7 @@ import org.junit.runner.RunWith
 import org.junit.{Test}
 
 @RunWith(classOf[JUnitRunner])
-class AgentTest extends junit.framework.TestCase 
+class AgentSpec extends junit.framework.TestCase 
 with Suite with MustMatchers 
 with ActorTestUtil with Logging {
 

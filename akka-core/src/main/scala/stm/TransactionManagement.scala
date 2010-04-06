@@ -4,6 +4,8 @@
 
 package se.scalablesolutions.akka.stm
 
+import se.scalablesolutions.akka.util.Logging
+
 import java.util.concurrent.atomic.AtomicBoolean
 
 import org.multiverse.api.ThreadLocalTransaction._
@@ -63,7 +65,9 @@ trait TransactionManagement {
   private[akka] def setTransaction(tx: Option[Transaction]) =
     if (tx.isDefined) TransactionManagement.transaction.set(tx)
 
-  private[akka] def clearTransactionSet = TransactionManagement.transactionSet.set(None)
+  private[akka] def clearTransactionSet = {
+    TransactionManagement.transactionSet.set(None)
+  }
 
   private[akka] def clearTransaction = {
     TransactionManagement.transaction.set(None)
