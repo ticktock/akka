@@ -70,8 +70,8 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
   val codehaus_snapshots = "Codehaus Snapshots" at "http://snapshots.repository.codehaus.org"
   val jboss = "jBoss" at "http://repository.jboss.org/maven2"
   val guiceyfruit = "GuiceyFruit" at "http://guiceyfruit.googlecode.com/svn/repo/releases/"
-  val google = "google" at "http://google-maven-repository.googlecode.com/svn/repository"
-  val m2 = "m2" at "http://download.java.net/maven/2"
+  val google = "Google" at "http://google-maven-repository.googlecode.com/svn/repository"
+  val javanet = "java.net" at "http://download.java.net/maven/2"
 
   // ------------------------------------------------------------
   // project defintions
@@ -185,7 +185,8 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
   }
 
   class AkkaJavaUtilProject(info: ProjectInfo) extends DefaultProject(info) {
-    val guicey = "org.guiceyfruit" % "guice-core" % "2.0-beta-4" % "compile"
+    val guicey = "org.guiceyfruit" % "guice-all" % "2.0" % "compile"
+    val aopalliance = "aopalliance" % "aopalliance" % "1.0" % "compile"
     val protobuf = "com.google.protobuf" % "protobuf-java" % "2.2.0" % "compile"
     val multiverse = "org.multiverse" % "multiverse-alpha" % "0.4" % "compile"
     lazy val dist = deployTask(info, distPath) dependsOn(`package`) describedAs("Deploying")
