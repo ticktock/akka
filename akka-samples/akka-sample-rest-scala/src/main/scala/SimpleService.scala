@@ -10,7 +10,6 @@ import se.scalablesolutions.akka.stm.TransactionalState
 import se.scalablesolutions.akka.persistence.cassandra.CassandraStorage
 import se.scalablesolutions.akka.config.ScalaConfig._
 import se.scalablesolutions.akka.util.Logging
-import se.scalablesolutions.akka.comet.AkkaClusterBroadcastFilter
 
 import java.lang.Integer
 import java.nio.ByteBuffer
@@ -88,7 +87,6 @@ class PubSub extends Actor {
   @Broadcast
   @Path("/topic/{topic}/{message}/")
   @Produces(Array("text/plain;charset=ISO-8859-1"))
-  //FIXME @Cluster(value = Array(classOf[AkkaClusterBroadcastFilter]),name = "foo")
   def say(@PathParam("topic") topic: Broadcaster, @PathParam("message") message: String): Broadcastable = new Broadcastable(message, topic)
 
   def receive = { case _ => }
@@ -149,7 +147,6 @@ class Chat extends Actor with Logging {
 
   @POST
   @Broadcast(Array(classOf[XSSHtmlFilter], classOf[JsonpFilter]))
-  //FIXME @Cluster(value = Array(classOf[AkkaClusterBroadcastFilter]),name = "bar")
   @Consumes(Array("application/x-www-form-urlencoded"))
   @Produces(Array("text/html"))
   def publishMessage(form: MultivaluedMap[String, String]) =

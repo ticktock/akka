@@ -24,7 +24,7 @@ object Kernel extends AkkaLoader {
    * Boots up the Kernel with default bootables
    */
   def boot: Unit = boot(true,
-    new EmbeddedAppServer with BootableActorLoaderService
+    new WebAppDeployer with BootableActorLoaderService
     with BootableRemoteActorService
     with CamelService)
 

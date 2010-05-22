@@ -24,9 +24,7 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
   lazy val distPath = info.projectPath / "dist"
 
   override def compileOptions = super.compileOptions ++
-    Seq("-deprecation", "-Xmigration", "-Xcheckinit", 
-        "-Xstrict-warnings", "-Xwarninit", "-encoding", "utf8")
-        .map(x => CompileOption(x))
+    Seq("-deprecation", "-Xmigration", "-Xcheckinit",  "-Xwarninit", "-encoding", "utf8").map(x => CompileOption(x))
 
   override def javaCompileOptions = JavaCompileOption("-Xlint:unchecked") :: super.javaCompileOptions.toList
 
