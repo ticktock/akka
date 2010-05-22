@@ -14,29 +14,30 @@ trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderS
   @volatile private var deployer : Option[GrizzlyWebServerDeployer] = None
   abstract override def onLoad = {
 	super.onLoad
-	if(config.getBool("akka.webappdeployer.service", false))
+	if(config.getBool("akka.webapps.service", false))
 	{
 	  log.info("Starting up web app deployer")
       deployer = Some({
-        val (deployDir,workDir) = HOME.map( (h) => ((h + "/deploy/webapps", h + "/deploy/work")) ).getOrElse(throw new IllegalStateException("AKKA_HOME NOT SET!"))
+        val (deployDir,workDir,sharedDir) = HOME.map( (h) => ((h + "/deploy/webapps", h + "/deploy/work", h + "/deploy/shared")) ).getOrElse(throw new IllegalStateException("AKKA_HOME NOT SET!"))
         val conf = new DeployerServerConfiguration{
-	        port = config.getInt("akka.webappdeployer.port", 9998)
+	        port = config.getInt("akka.webapps.port", 9998)
         	watchFolder = deployDir
-	        cometEnabled = config.getBool("akka.webappdeployer.comet", false)
-	        watchInterval = config.getInt("akka.webappdeployer.watchinterval_sec", 10) // 2 min
-	        websocketsEnabled = config.getBool("akka.webappdeployer.websockets", true)
+            libraryPath = sharedDir
+	        cometEnabled = config.getBool("akka.webapps.comet", false)
+	        watchInterval = config.getInt("akka.webapps.watchinterval_sec", 10)
+	        websocketsEnabled = config.getBool("akka.webapps.websockets", true)
         }
 
-        
 	    val d = new GrizzlyWebServerDeployer{
          override def deployApplications(conf : DeployerServerConfiguration) {
-            getWarDeployer.setWorkFolder(workDir) //configureServer is unoverridable and sets WorkFolder to the wrong dir
-            serverLibLoader = new URLClassLoader(Array[URL](),self.applicationLoader.getOrElse(Thread.currentThread.getContextClassLoader))
+            //configureServer is unoverridable and sets WorkFolder to the wrong dir
+            getWarDeployer.setWorkFolder(workDir)
+            //Since I can only supply a libraryPath and not a CL, I need to hook this in
+            //serverLibLoader = new URLClassLoader(Array[URL](),self.applicationLoader.getOrElse(Thread.currentThread.getContextClassLoader))
             super.deployApplications(conf)
           }
 	    }
         d launch conf
-        log.info("workdir: " + d.getWorkFolder)
         d
       })
     }
