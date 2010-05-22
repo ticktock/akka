@@ -231,7 +231,9 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
       new AkkaCassandraProject(_), akka_persistence_common)
   }
 
-  class AkkaKernelProject(info: ProjectInfo) extends AkkaDefaultProject(info, distPath)
+  class AkkaKernelProject(info: ProjectInfo) extends AkkaDefaultProject(info, distPath) {
+	val deployer = "grizzly" % "deployer" % "1.9.19-20100520-SNAPSHOT" % "compile"
+  }
 
   class AkkaSpringProject(info: ProjectInfo) extends AkkaDefaultProject(info, distPath) {
     val spring_beans = "org.springframework" % "spring-beans" % "3.0.1.RELEASE" % "compile"
