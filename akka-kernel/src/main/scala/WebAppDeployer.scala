@@ -25,7 +25,7 @@ trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderS
             libraryPath = sharedDir
 	        cometEnabled = config.getBool("akka.webapps.comet", false)
 	        watchInterval = config.getInt("akka.webapps.watchinterval_sec", 10)
-	        websocketsEnabled = config.getBool("akka.webapps.websockets", true)
+	        websocketsEnabled = config.getBool("akka.webapps.websockets", false)
         }
 
 	    val d = new GrizzlyWebServerDeployer{
@@ -34,6 +34,7 @@ trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderS
             getWarDeployer.setWorkFolder(workDir)
             //Since I can only supply a libraryPath and not a CL, I need to hook this in
             //serverLibLoader = new URLClassLoader(Array[URL](),self.applicationLoader.getOrElse(Thread.currentThread.getContextClassLoader))
+            //serverLibLoader = self.applicationLoader.get.asInstanceOf[URLClassLoader]
             super.deployApplications(conf)
           }
 	    }
