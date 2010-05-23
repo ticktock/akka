@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2009-2010 Scalable Solutions AB <http://scalablesolutions.se>
  */
-
+/*
 package sample.rest.java;
 
 import javax.ws.rs.Path;
@@ -15,7 +15,7 @@ import se.scalablesolutions.akka.persistence.common.PersistentMap;
 import se.scalablesolutions.akka.persistence.cassandra.CassandraStorage;
 
 import java.nio.ByteBuffer;
-
+*/
 /**
  * Try service out by invoking (multiple times):
  * <pre>
@@ -23,7 +23,7 @@ import java.nio.ByteBuffer;
  * </pre>
  * Or browse to the URL from a web browser.
  */
-@Path("/persistentjavacount")
+/*@Path("/persistentjavacount")
 @transactionrequired
 public class PersistentSimpleService {
   private String KEY = "COUNTER";
@@ -56,4 +56,4 @@ public class PersistentSimpleService {
   public void postRestart() {
     System.out.println("Reinitialize after restart by supervisor");
   }
-}
+}*/

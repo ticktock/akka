@@ -1,4 +1,4 @@
-package sample.rest.java;
+/*package sample.rest.java;
 
 import se.scalablesolutions.akka.config.ActiveObjectConfigurator;
 import static se.scalablesolutions.akka.config.JavaConfig.*;
@@ -21,3 +21,4 @@ public class Boot {
         }).supervise();
     }
 }
+*/

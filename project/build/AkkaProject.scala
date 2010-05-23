@@ -163,27 +163,11 @@ class AkkaParent(info: ProjectInfo) extends DefaultProject(info) {
   }
 
   class AkkaHttpProject(info: ProjectInfo) extends AkkaDefaultProject(info, distPath) {
-    val jackson_core_asl = "org.codehaus.jackson" % "jackson-core-asl" % "1.2.1" % "compile"
-    val stax_api = "javax.xml.stream" % "stax-api" % "1.0-2" % "compile"
     val servlet = "javax.servlet" % "servlet-api" % "2.5" % "compile"
-    val jersey = "com.sun.jersey" % "jersey-core" % JERSEY_VERSION % "compile"
-    val jersey_server = "com.sun.jersey" % "jersey-server" % JERSEY_VERSION % "compile"
-    val jersey_json = "com.sun.jersey" % "jersey-json" % JERSEY_VERSION % "compile"
-    val jersey_contrib = "com.sun.jersey.contribs" % "jersey-scala" % JERSEY_VERSION % "compile"
-    val jsr311 = "javax.ws.rs" % "jsr311-api" % "1.1" % "compile"
-    val grizzly = "com.sun.grizzly" % "grizzly-comet-webserver" % "1.9.18-i" % "compile"
-    val atmo = "org.atmosphere" % "atmosphere-annotations" % ATMO_VERSION % "compile"
-    val atmo_jersey = "org.atmosphere" % "atmosphere-jersey" % ATMO_VERSION % "compile"
-    val atmo_runtime = "org.atmosphere" % "atmosphere-runtime" % ATMO_VERSION % "compile"
-    val commons_logging = "commons-logging" % "commons-logging" % "1.1.1" % "compile"
-    val annotation = "javax.annotation" % "jsr250-api" % "1.0" % "compile"
-    val lift_common = "net.liftweb" % "lift-common" % LIFT_VERSION % "compile"
-    val lift_util = "net.liftweb" % "lift-util" % LIFT_VERSION % "compile"
-    
+ 
     // testing
     val scalatest = "org.scalatest" % "scalatest" % SCALATEST_VERSION % "test"
     val junit = "junit" % "junit" % "4.5" % "test"
-    val mockito = "org.mockito" % "mockito-all" % "1.8.1" % "test"
   }
 
   class AkkaCamelProject(info: ProjectInfo) extends AkkaDefaultProject(info, distPath) {

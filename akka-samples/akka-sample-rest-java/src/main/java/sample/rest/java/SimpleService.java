@@ -1,7 +1,7 @@
 /**
  * Copyright (C) 2009-2010 Scalable Solutions AB <http://scalablesolutions.se>
  */
-
+/*
 package sample.rest.java;
 
 import javax.ws.rs.Path;
@@ -13,7 +13,7 @@ import se.scalablesolutions.akka.actor.annotation.prerestart;
 import se.scalablesolutions.akka.actor.annotation.postrestart;
 import se.scalablesolutions.akka.stm.TransactionalState;
 import se.scalablesolutions.akka.stm.TransactionalMap;
-
+*/
 /**                                
  * Try service out by invoking (multiple times):
  * <pre>
@@ -21,7 +21,7 @@ import se.scalablesolutions.akka.stm.TransactionalMap;
  * </pre>
  * Or browse to the URL from a web browser.
  */
-@Path("/javacount")
+/*@Path("/javacount")
 @transactionrequired
 public class SimpleService {
   private String KEY = "COUNTER";
@@ -53,4 +53,4 @@ public class SimpleService {
   public void postRestart() {
     System.out.println("Reinitialize after restart by supervisor");
   }
-}
+}*/

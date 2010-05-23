@@ -2,7 +2,7 @@
  * Copyright (C) 2009-2010 Scalable Solutions AB <http://scalablesolutions.se>
  */
 
-package sample.rest.scala
+/*package sample.rest.scala
 
 import se.scalablesolutions.akka.actor.{Transactor, SupervisorFactory, Actor}
 import se.scalablesolutions.akka.actor.Actor._
@@ -39,7 +39,7 @@ class Boot {
          LifeCycle(Permanent))
       :: Nil))
   factory.newInstance.start
-}
+}*/
 
 /**
  * Try service out by invoking (multiple times):
@@ -48,7 +48,7 @@ class Boot {
  * </pre>
  * Or browse to the URL from a web browser.
  */
-@Path("/scalacount")
+/*@Path("/scalacount")
 class SimpleService extends Transactor {
 
   case object Tick
@@ -90,7 +90,7 @@ class PubSub extends Actor {
   def say(@PathParam("topic") topic: Broadcaster, @PathParam("message") message: String): Broadcastable = new Broadcastable(message, topic)
 
   def receive = { case _ => }
-}
+}*/
 
 /**
  * Try service out by invoking (multiple times):
@@ -99,7 +99,7 @@ class PubSub extends Actor {
  * </pre>
  * Or browse to the URL from a web browser.
  */
-@Path("/persistentscalacount")
+/*@Path("/persistentscalacount")
 class PersistentSimpleService extends Transactor {
 
   case object Tick
@@ -171,3 +171,4 @@ class JsonpFilter extends BroadcastFilter with Logging {
     name + "\", message: \"" + message + "\" }); \n</script>\n")
   }
 }
+*/

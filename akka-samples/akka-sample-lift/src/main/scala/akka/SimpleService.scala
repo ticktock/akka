@@ -7,25 +7,14 @@ import se.scalablesolutions.akka.persistence.cassandra.CassandraStorage
 import Actor._
 
 import java.lang.Integer
-import javax.ws.rs.{GET, Path, Produces}
 import java.nio.ByteBuffer
 
-/**
- * Try service out by invoking (multiple times):
- * <pre>
- * curl http://localhost:9998/liftcount
- * </pre>
- * Or browse to the URL from a web browser.
- */
-@Path("/liftcount")
 class SimpleService extends Transactor {
   case object Tick
   private val KEY = "COUNTER"
   private var hasStartedTicking = false
   private lazy val storage = TransactionalState.newMap[String, Integer]
 
-  @GET
-  @Produces(Array("text/html"))
   def count = (self !! Tick).getOrElse(<h1>Error in counter</h1>)
 
   def receive = {
@@ -41,14 +30,6 @@ class SimpleService extends Transactor {
   }
 }
 
-/**
- * Try service out by invoking (multiple times):
- * <pre>
- * curl http://localhost:9998/persistentliftcount
- * </pre>
- * Or browse to the URL from a web browser.
- */
-@Path("/persistentliftcount")
 class PersistentSimpleService extends Transactor {
 
   case object Tick
@@ -56,8 +37,6 @@ class PersistentSimpleService extends Transactor {
   private var hasStartedTicking = false
   private lazy val storage = CassandraStorage.newMap
 
-  @GET
-  @Produces(Array("text/html"))
   def count = (self !! Tick).getOrElse(<h1>Error in counter</h1>)
 
   def receive = {
