@@ -13,22 +13,22 @@ import com.sun.grizzly.http.webxml.schema.WebApp
 trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderService =>
   @volatile private var deployer : Option[GrizzlyWebServerDeployer] = None
   abstract override def onLoad = {
-	super.onLoad
-	if(config.getBool("akka.webapps.service", false))
-	{
-	  log.info("Starting up web app deployer")
+    super.onLoad
+    if(config.getBool("akka.webapps.service", false))
+    {
+      log.info("Starting up web app deployer")
       deployer = Some({
         val (deployDir,workDir,sharedDir) = HOME.map( (h) => ((h + "/deploy/webapps", h + "/deploy/work", h + "/deploy/shared")) ).getOrElse(throw new IllegalStateException("AKKA_HOME NOT SET!"))
         val conf = new DeployerServerConfiguration{
-	        port = config.getInt("akka.webapps.port", 9998)
-        	watchFolder = deployDir
+            port = config.getInt("akka.webapps.port", 9998)
+            watchFolder = deployDir
             libraryPath = sharedDir
-	        cometEnabled = config.getBool("akka.webapps.comet", false)
-	        watchInterval = config.getInt("akka.webapps.watchinterval_sec", 10)
-	        websocketsEnabled = config.getBool("akka.webapps.websockets", false)
+            cometEnabled = config.getBool("akka.webapps.comet", false)
+            watchInterval = config.getInt("akka.webapps.watchinterval_sec", 10)
+            websocketsEnabled = config.getBool("akka.webapps.websockets", false)
         }
 
-	    val d = new GrizzlyWebServerDeployer{
+        val d = new GrizzlyWebServerDeployer{
          override def deployApplications(conf : DeployerServerConfiguration) {
             //configureServer is unoverridable and sets WorkFolder to the wrong dir
             getWarDeployer.setWorkFolder(workDir)
@@ -37,7 +37,7 @@ trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderS
             //serverLibLoader = self.applicationLoader.get.asInstanceOf[URLClassLoader]
             super.deployApplications(conf)
           }
-	    }
+        }
         d launch conf
         d
       })
@@ -45,13 +45,12 @@ trait WebAppDeployer extends Bootable with Logging { self : BootableActorLoaderS
   }
 
   abstract override def onUnload = {
-	if(deployer.isDefined)
-	{
+    if(deployer.isDefined)
+    {
       log.info("Shutting down web app deployer")
       deployer.foreach( _.stop )
       deployer = None
     }
-    
     super.onUnload
   }
 }
