@@ -50,18 +50,21 @@ import com.google.protobuf.ByteString
 object ActorRef {
 
   /**
-   * Deserializes the ActorRef instance from a byte array (Array[Byte]) into an ActorRef instance.
+   * Deserializes a byte array (Array[Byte]) into an RemoteActorRef instance.
    */
-  def fromBinary(bytes: Array[Byte]): ActorRef =
-    fromProtobuf(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, None)
+  def fromBinaryToRemoteActorRef(bytes: Array[Byte]): ActorRef =
+    fromProtobufToRemoteActorRef(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, None)
 
-  def fromBinary(bytes: Array[Byte], loader: ClassLoader): ActorRef =
-    fromProtobuf(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, Some(loader))
+    /**
+     * Deserializes a byte array (Array[Byte]) into an RemoteActorRef instance.
+     */
+  def fromBinaryToRemoteActorRef(bytes: Array[Byte], loader: ClassLoader): ActorRef =
+    fromProtobufToRemoteActorRef(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, Some(loader))
 
   /**
-   * Deserializes the ActorRef instance from a Protocol Buffers (protobuf) Message into an ActorRef instance.
+   * Deserializes a RemoteActorRefProtocol Protocol Buffers (protobuf) Message into an RemoteActorRef instance.
    */
-  private[akka] def fromProtobuf(protocol: RemoteActorRefProtocol, loader: Option[ClassLoader]): ActorRef =
+  private[akka] def fromProtobufToRemoteActorRef(protocol: RemoteActorRefProtocol, loader: Option[ClassLoader]): ActorRef =
     RemoteActorRef(
       protocol.getUuid,
       protocol.getActorClassname,
@@ -69,6 +72,61 @@ object ActorRef {
       protocol.getHomeAddress.getPort,
       protocol.getTimeout,
       loader)
+
+  /**
+   * Deserializes a byte array (Array[Byte]) into an LocalActorRef instance.
+   */
+  def fromBinaryToLocalActorRef(bytes: Array[Byte]): ActorRef =
+    fromProtobufToLocalActorRef(SerializedActorRefProtocol.newBuilder.mergeFrom(bytes).build, None)
+
+    /**
+     * Deserializes a byte array (Array[Byte]) into an LocalActorRef instance.
+     */
+  def fromBinaryToLocalActorRef(bytes: Array[Byte], loader: ClassLoader): ActorRef =
+    fromProtobufToLocalActorRef(SerializedActorRefProtocol.newBuilder.mergeFrom(bytes).build, Some(loader))
+
+  /**
+   * Deserializes a SerializedActorRefProtocol Protocol Buffers (protobuf) Message into an LocalActorRef instance.
+   */
+  private[akka] def fromProtobufToLocalActorRef(protocol: SerializedActorRefProtocol, loader: Option[ClassLoader]): ActorRef = {
+    val serializerClass = 
+      if (loader.isDefined) loader.get.loadClass(protocol.getSerializerClassname)
+      else Class.forName(protocol.getSerializerClassname)
+    val serializer = serializerClass.newInstance.asInstanceOf[Serializer]
+ 
+    val lifeCycle = 
+      if (protocol.hasLifeCycle) {
+        val lifeCycleProtocol = protocol.getLifeCycle
+        val restartCallbacks = 
+          if (lifeCycleProtocol.hasPreRestart || lifeCycleProtocol.hasPostRestart) 
+            Some(RestartCallbacks(lifeCycleProtocol.getPreRestart, lifeCycleProtocol.getPostRestart))
+          else None
+        Some(if (lifeCycleProtocol.getLifeCycle == LifeCycleType.PERMANENT) LifeCycle(Permanent, restartCallbacks)
+             else if (lifeCycleProtocol.getLifeCycle == LifeCycleType.TEMPORARY) LifeCycle(Temporary, restartCallbacks)
+             else throw new IllegalStateException("LifeCycle type is not valid: " + lifeCycleProtocol.getLifeCycle))
+      } else None
+      
+    val supervisor = 
+      if (protocol.hasSupervisor) Some(fromProtobufToRemoteActorRef(protocol.getSupervisor)) 
+      else None
+    val hotswap = 
+      if (protocol.hasHotswapStack) Some(serializer.fromBinary(protocol.getHotswapStack).asInstanceOf[Option[PartialFunction[Any, Unit]]]) 
+      else None
+  
+    new LocalActorRef(
+      protocol.getUuid,
+      protocol.getId,
+      proceed.getActorInstance,
+      protocol.getOriginalAddress.getHostname,
+      protocol.getOriginalAddress.getPort,
+      if (protocol.hasIsTransactor) protocol.getIsTransactor else false,
+      if (protocol.hasTimeout) protocol.getTimeout else Actor.TIMEOUT,
+      lifeCycle,
+      supervisor,
+      hotswap,
+      loader,
+      serializer)
+  }
 }
 
 /**
@@ -586,16 +644,44 @@ trait ActorRef extends TransactionManagement {
 }
 
 /**
- * Local ActorRef that is used when referencing the Actor on its "home" node.
+ * Local (serializable) ActorRef that is used when referencing the Actor on its "home" node.
  *
  * @author <a href="http://jonasboner.com">Jonas Bon&#233;r</a>
  */
 sealed class LocalActorRef private[akka](
   private[this] var actorFactory: Either[Option[Class[_ <: Actor]], Option[() => Actor]] = Left(None))
   extends ActorRef {
+    
+  private var isDeserialized = false
 
   private[akka] def this(clazz: Class[_ <: Actor]) = this(Left(Some(clazz)))
   private[akka] def this(factory: () => Actor) =     this(Right(Some(factory)))
+  
+  // used only for deserialization
+  private[akka] def this(__uuid: String,
+                         __id: String,
+                         __actorBytes: Array[Byte],
+                         __hostname: String,
+                         __port: Long,
+                         __isTransactor: Boolean,
+                         __timeout: Long,
+                         __lifeCycle: Option[LifeCycle],
+                         __supervisor: Option[ActorRef],
+                         __hotswap: Option[PartialFunction[Any, Unit]],
+                         __loader: ClassLoader,
+                         __serializer: Serializer) = {
+      this(() => serializer.fromBinary(__actorBytes).asInstanceOf[Actor])
+      isDeserialized = true
+      _uuid = __uuid
+      id = __id
+      homeAddress = (__hostname, __port)
+      isTransactor = __isTransactor
+      timeout = __timeout
+      lifeCycle = __lifeCycle
+      _supervisor = __supervisor
+      _hotswap = __hotswap
+      ActorRegistry.register(this)
+    }
 
   // Only mutable for RemoteServer in order to maintain identity across nodes
   @volatile private[akka] var _remoteAddress: Option[InetSocketAddress] = None
@@ -612,7 +698,7 @@ sealed class LocalActorRef private[akka](
   // instance elegible for garbage collection
   private val actorSelfFields = findActorSelfField(actor.getClass)
 
-  if (runActorInitialization) initializeActorInstance
+  if (runActorInitialization && !isDeserialized) initializeActorInstance
 
   /**
    * Serializes the ActorRef instance into a Protocol Buffers (protobuf) Message.
@@ -637,7 +723,8 @@ sealed class LocalActorRef private[akka](
   }
 
   protected[akka] def toSerializedActorRefProtocol: SerializedActorRefProtocol = guard.withGuard {
-    if (!isSerializable) throw new IllegalStateException("Can't serialize an ActorRef using SerializedActorRefProtocol that is wrapping an Actor that is not mixing in the SerializableActor trait")
+    if (!isSerializable) throw new IllegalStateException(
+      "Can't serialize an ActorRef using SerializedActorRefProtocol\nthat is wrapping an Actor that is not mixing in the SerializableActor trait")
 
     val lifeCycleProtocol: Option[LifeCycleProtocol] = {
       def setScope(builder: LifeCycleProtocol.Builder, scope: Scope) = scope match {
@@ -654,8 +741,7 @@ sealed class LocalActorRef private[akka](
           builder.setPreRestart(callbacks.preRestart)
           builder.setPostRestart(callbacks.postRestart)
           Some(builder.build)
-        case None => 
-          None
+        case None => None
       }
     }
 
