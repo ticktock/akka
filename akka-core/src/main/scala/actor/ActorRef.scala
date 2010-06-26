@@ -744,7 +744,8 @@ sealed class LocalActorRef private[akka](
                          __messages: List[RemoteRequestProtocol]) = {
       this(() => {
         val actorClass = __loader.loadClass(__actorClassName)
-        val actorInstance = actorClass.newInstance
+        actorClass.newInstance.asInstanceOf[Actor]
+        /**
         if (actorInstance.isInstanceOf[StatelessSerializableActor]) {
           actorInstance.asInstanceOf[Actor]
         } else if (actorInstance.isInstanceOf[StatefulSerializerSerializableActor]) {
@@ -760,6 +761,7 @@ sealed class LocalActorRef private[akka](
           "\n\t- StatelessSerializableActor" + 
           "\n\t- StatefulSerializerSerializableActor" + 
           "\n\t- StatefulWrappedSerializableActor")
+      **/
       })
       loader = Some(__loader)
       isDeserialized = true
