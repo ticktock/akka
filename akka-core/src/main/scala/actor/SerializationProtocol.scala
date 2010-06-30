@@ -15,6 +15,9 @@ import se.scalablesolutions.akka.serialization.Serializer
 
 import com.google.protobuf.ByteString
 
+/**
+ * Type class definition for Actor Serialization
+ */
 trait FromBinary[T <: Actor] {
   def fromBinary(bytes: Array[Byte], act: T): T
 }
@@ -23,21 +26,48 @@ trait ToBinary[T <: Actor] {
   def toBinary(t: T): Array[Byte]
 }
 
+// client needs to implement Format[] for the respective actor
 trait Format[T <: Actor] extends FromBinary[T] with ToBinary[T]
 
+/**
+ * A default implementation for a stateless actor
+ *
+ * Create a Format object with the client actor as the implementation of the type class
+ *
+ * <pre>
+ * object BinaryFormatMyStatelessActor {
+ *   implicit object MyStatelessActorFormat extends StatelessActorFormat[MyStatelessActor]
+ * }
+ * </pre>
+ */
 trait StatelessActorFormat[T <: Actor] extends Format[T] {
   def fromBinary(bytes: Array[Byte], act: T) = act
   def toBinary(ac: T) = Array.empty[Byte]
 }
 
+/**
+ * A default implementation of the type class for a Format that specifies a serializer
+ *
+ * Create a Format object with the client actor as the implementation of the type class and
+ * a serializer object
+ *
+ * <pre>
+ * object BinaryFormatMyJavaSerializableActor {
+ *   implicit object MyJavaSerializableActorFormat extends SerializerBasedActorFormat[MyJavaSerializableActor] {
+ *     val serializer = Serializer.Java
+ *   }
+ * }
+ * </pre>
+ */
 trait SerializerBasedActorFormat[T <: Actor] extends Format[T] {
   val serializer: Serializer
-  def fromBinary(bytes: Array[Byte], act: T) = 
-    serializer.fromBinary(bytes, Some(act.self.actorClass)).asInstanceOf[T]
-
+  def fromBinary(bytes: Array[Byte], act: T) = serializer.fromBinary(bytes, Some(act.self.actorClass)).asInstanceOf[T]
   def toBinary(ac: T) = serializer.toBinary(ac)
 }
 
+/**
+ * Module for local actor serialization
+ */
 object ActorSerialization {
 
   def fromBinary[T <: Actor](bytes: Array[Byte])(implicit format: Format[T]): ActorRef = 
@@ -79,8 +109,8 @@ object ActorSerialization {
       .setOriginalAddress(originalAddress)
       .setIsTransactor(a.isTransactor)
       .setTimeout(a.timeout)
+
     builder.setActorInstance(ByteString.copyFrom(format.toBinary(a.actor.asInstanceOf[T])))
-    // a.serializer.foreach(s => builder.setSerializerClassname(s.getClass.getName))
     lifeCycleProtocol.foreach(builder.setLifeCycle(_))
     a.supervisor.foreach(s => builder.setSupervisor(RemoteActorSerialization.toRemoteActorRefProtocol(s)))
     // FIXME: how to serialize the hotswap PartialFunction ??
@@ -94,13 +124,11 @@ object ActorSerialization {
   private def fromProtobufToLocalActorRef[T <: Actor](protocol: SerializedActorRefProtocol, format: Format[T], loader: Option[ClassLoader]): ActorRef = {
     Actor.log.debug("Deserializing SerializedActorRefProtocol to LocalActorRef:\n" + protocol)
   
-    val serializer = if (protocol.hasSerializerClassname) { 
-      val serializerClass =
-        if (loader.isDefined) loader.get.loadClass(protocol.getSerializerClassname)
-        else Class.forName(protocol.getSerializerClassname)
-      Some(serializerClass.newInstance.asInstanceOf[Serializer])
-    } else None
-    
+    val serializer = 
+      if (format.isInstanceOf[SerializerBasedActorFormat[_]]) 
+        Some(format.asInstanceOf[SerializerBasedActorFormat[_]].serializer)
+      else None
+
     val lifeCycle =
       if (protocol.hasLifeCycle) {
         val lifeCycleProtocol = protocol.getLifeCycle
@@ -138,9 +166,9 @@ object ActorSerialization {
       hotswap,
       loader.getOrElse(getClass.getClassLoader), // TODO: should we fall back to getClass.getClassLoader?
       protocol.getMessagesList.toArray.toList.asInstanceOf[List[RemoteRequestProtocol]], format)
-      if (format.isInstanceOf[SerializerBasedActorFormat[_]] == false) {
+
+      if (format.isInstanceOf[SerializerBasedActorFormat[_]] == false)
         format.fromBinary(protocol.getActorInstance.toByteArray, ar.actor.asInstanceOf[T])
-      }
       ar
   }
 }
