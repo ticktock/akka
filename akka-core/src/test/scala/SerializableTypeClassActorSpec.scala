@@ -10,6 +10,7 @@ import org.scalatest.junit.JUnitRunner
 import org.junit.runner.RunWith
 
 import com.google.protobuf.Message
+import ActorSerialization._
 
 @RunWith(classOf[JUnitRunner])
 class SerializableTypeClassActorSpec extends
@@ -21,9 +22,10 @@ class SerializableTypeClassActorSpec extends
 
   object BinaryFormatMyActor {
     implicit object MyActorFormat extends Format[MyActor] {
-      def fromBinary(bytes: Array[Byte], act: MyActor): Unit = {
+      def fromBinary(bytes: Array[Byte], act: MyActor) = {
         val p = Serializer.Protobuf.fromBinary(bytes, Some(classOf[ProtobufProtocol.Counter])).asInstanceOf[ProtobufProtocol.Counter]
         act.count = p.getCount
+        act
       }
       def toBinary(ac: MyActor) = 
         ProtobufProtocol.Counter.newBuilder.setCount(ac.count).build.toByteArray
@@ -32,10 +34,11 @@ class SerializableTypeClassActorSpec extends
 
   object BinaryFormatMyActorWithDualCounter {
     implicit object MyActorWithDualCounterFormat extends Format[MyActorWithDualCounter] {
-      def fromBinary(bytes: Array[Byte], act: MyActorWithDualCounter): Unit = {
+      def fromBinary(bytes: Array[Byte], act: MyActorWithDualCounter) = {
         val p = Serializer.Protobuf.fromBinary(bytes, Some(classOf[ProtobufProtocol.DualCounter])).asInstanceOf[ProtobufProtocol.DualCounter]
         act.count1 = p.getCount1
         act.count2 = p.getCount2
+        act
       }
       def toBinary(ac: MyActorWithDualCounter) = 
         ProtobufProtocol.DualCounter.newBuilder.setCount1(ac.count1).setCount2(ac.count2).build.toByteArray
@@ -43,17 +46,22 @@ class SerializableTypeClassActorSpec extends
   }
 
   object BinaryFormatMyStatelessActor {
-    implicit object MyStatelessActorFormat extends Format[MyStatelessActor] {
-      def fromBinary(bytes: Array[Byte], act: MyStatelessActor): Unit = {
-      }
-      def toBinary(ac: MyStatelessActor) = Array.empty[Byte]
+    implicit object MyStatelessActorFormat extends StatelessActorFormat[MyStatelessActor]
+  }
+
+  object BinaryFormatMyStatelessActorWithMessagesInMailbox {
+    implicit object MyStatelessActorFormat extends StatelessActorFormat[MyStatelessActorWithMessagesInMailbox]
+  }
+
+  object BinaryFormatMyJavaSerializableActor {
+    implicit object MyJavaSerializableActorFormat extends SerializerBasedActorFormat[MyJavaSerializableActor] {
+      val serializer = Serializer.Java
     }
   }
 
   describe("Serializable actor") {
     it("should be able to serialize and de-serialize a stateful actor") {
       import BinaryFormatMyActor._
-      import ActorSerialization._
 
       val actor1 = actorOf[MyActor].start
       (actor1 !! "hello").getOrElse("_") should equal("world 1")
@@ -67,7 +75,6 @@ class SerializableTypeClassActorSpec extends
 
     it("should be able to serialize and de-serialize a stateful actor with compound state") {
       import BinaryFormatMyActorWithDualCounter._
-      import ActorSerialization._
 
       val actor1 = actorOf[MyActorWithDualCounter].start
       (actor1 !! "hello").getOrElse("_") should equal("world 1 1")
@@ -81,7 +88,6 @@ class SerializableTypeClassActorSpec extends
 
     it("should be able to serialize and de-serialize a stateless actor") {
       import BinaryFormatMyStatelessActor._
-      import ActorSerialization._
 
       val actor1 = actorOf[MyStatelessActor].start
       (actor1 !! "hello").getOrElse("_") should equal("world")
@@ -91,6 +97,38 @@ class SerializableTypeClassActorSpec extends
       val actor2 = fromBinary(bytes)
       actor2.start
       (actor2 !! "hello").getOrElse("_") should equal("world")
+    }
+
+    it("should be able to serialize and de-serialize a stateful actor with a given serializer") {
+      import BinaryFormatMyJavaSerializableActor._
+
+      val actor1 = actorOf[MyJavaSerializableActor].start
+      (actor1 !! "hello").getOrElse("_") should equal("world 1")
+      (actor1 !! "hello").getOrElse("_") should equal("world 2")
+
+      val bytes = toBinary(actor1)
+      val actor2 = fromBinary(bytes)
+      actor2.start
+      (actor2 !! "hello").getOrElse("_") should equal("world 3")
+    }
+
+    it("should be able to serialize and deserialize a MyStatelessActorWithMessagesInMailbox") {
+      import BinaryFormatMyStatelessActorWithMessagesInMailbox._
+
+      val actor1 = actorOf[MyStatelessActorWithMessagesInMailbox].start
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      (actor1 ! "hello")
+      val actor2 = fromBinary(toBinary(actor1))
+      Thread.sleep(1000)
+      (actor2 !! "hello-reply").getOrElse("_") should equal("world")
     }
   }
 }
@@ -120,5 +158,24 @@ class MyStatelessActor extends Actor {
   def receive = {
     case "hello" =>
       self.reply("world")
+  }
+}
+
+class MyStatelessActorWithMessagesInMailbox extends Actor {
+  def receive = {
+    case "hello" =>
+      println("# messages in mailbox " + self.mailbox.size)
+      Thread.sleep(500)
+    case "hello-reply" => self.reply("world")
+  }
+}
+
+@serializable class MyJavaSerializableActor extends Actor {
+  var count = 0
+
+  def receive = {
+    case "hello" =>
+      count = count + 1
+      self.reply("world " + count)
   }
 }

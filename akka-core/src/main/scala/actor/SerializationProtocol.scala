@@ -4,8 +4,19 @@
 
 package se.scalablesolutions.akka.actor
 
+import se.scalablesolutions.akka.config.{AllForOneStrategy, OneForOneStrategy, FaultHandlingStrategy}
+import se.scalablesolutions.akka.config.ScalaConfig._
+import se.scalablesolutions.akka.stm.global._
+import se.scalablesolutions.akka.stm.TransactionManagement._
+import se.scalablesolutions.akka.stm.TransactionManagement
+import se.scalablesolutions.akka.remote.protocol.RemoteProtocol._
+import se.scalablesolutions.akka.remote.{RemoteServer, RemoteRequestProtocolIdFactory, MessageSerializer}
+import se.scalablesolutions.akka.serialization.Serializer
+
+import com.google.protobuf.ByteString
+
 trait FromBinary[T <: Actor] {
-  def fromBinary(bytes: Array[Byte], act: T): Unit
+  def fromBinary(bytes: Array[Byte], act: T): T
 }
 
 trait ToBinary[T <: Actor] {
@@ -14,25 +25,26 @@ trait ToBinary[T <: Actor] {
 
 trait Format[T <: Actor] extends FromBinary[T] with ToBinary[T]
 
-import se.scalablesolutions.akka.config.{AllForOneStrategy, OneForOneStrategy, FaultHandlingStrategy}
-import se.scalablesolutions.akka.config.ScalaConfig._
-import se.scalablesolutions.akka.stm.global._
-import se.scalablesolutions.akka.stm.TransactionManagement._
-import se.scalablesolutions.akka.stm.TransactionManagement
-import se.scalablesolutions.akka.remote.protocol.RemoteProtocol._
-import se.scalablesolutions.akka.serialization.Serializer
+trait StatelessActorFormat[T <: Actor] extends Format[T] {
+  def fromBinary(bytes: Array[Byte], act: T) = act
+  def toBinary(ac: T) = Array.empty[Byte]
+}
 
-import com.google.protobuf.ByteString
+trait SerializerBasedActorFormat[T <: Actor] extends Format[T] {
+  val serializer: Serializer
+  def fromBinary(bytes: Array[Byte], act: T) = 
+    serializer.fromBinary(bytes, Some(act.self.actorClass)).asInstanceOf[T]
+
+  def toBinary(ac: T) = serializer.toBinary(ac)
+}
 
 object ActorSerialization {
 
-  def fromBinary[T <: Actor](bytes: Array[Byte])(implicit format: Format[T]): ActorRef = {
+  def fromBinary[T <: Actor](bytes: Array[Byte])(implicit format: Format[T]): ActorRef = 
     fromBinaryToLocalActorRef(bytes, format)
-  }
 
   def toBinary[T <: Actor](a: ActorRef)(implicit format: Format[T]): Array[Byte] = { 
-    val protocol = toSerializedActorRefProtocol(a, format)
-    protocol.toByteArray
+    toSerializedActorRefProtocol(a, format).toByteArray
   }
 
   private def toSerializedActorRefProtocol[T <: Actor](a: ActorRef, format: Format[T]): SerializedActorRefProtocol = {
@@ -68,15 +80,15 @@ object ActorSerialization {
       .setIsTransactor(a.isTransactor)
       .setTimeout(a.timeout)
     builder.setActorInstance(ByteString.copyFrom(format.toBinary(a.actor.asInstanceOf[T])))
-    a.serializer.foreach(s => builder.setSerializerClassname(s.getClass.getName))
+    // a.serializer.foreach(s => builder.setSerializerClassname(s.getClass.getName))
     lifeCycleProtocol.foreach(builder.setLifeCycle(_))
-    a.supervisor.foreach(s => builder.setSupervisor(s.toRemoteActorRefProtocol))
+    a.supervisor.foreach(s => builder.setSupervisor(RemoteActorSerialization.toRemoteActorRefProtocol(s)))
     // FIXME: how to serialize the hotswap PartialFunction ??
     //hotswap.foreach(builder.setHotswapStack(_))
     builder.build
   }
 
-  private def fromBinaryToLocalActorRef[T <: Actor](bytes: Array[Byte], format: Format[T]): ActorRef =
+  private def fromBinaryToLocalActorRef[T <: Actor](bytes: Array[Byte], format: Format[T]): ActorRef = 
     fromProtobufToLocalActorRef(SerializedActorRefProtocol.newBuilder.mergeFrom(bytes).build, format, None)
 
   private def fromProtobufToLocalActorRef[T <: Actor](protocol: SerializedActorRefProtocol, format: Format[T], loader: Option[ClassLoader]): ActorRef = {
@@ -103,7 +115,7 @@ object ActorSerialization {
 
     val supervisor =
       if (protocol.hasSupervisor)
-        Some(fromProtobufToRemoteActorRef(protocol.getSupervisor, loader))
+        Some(RemoteActorSerialization.fromProtobufToRemoteActorRef(protocol.getSupervisor, loader))
       else None
       
     val hotswap =
@@ -125,13 +137,31 @@ object ActorSerialization {
       supervisor,
       hotswap,
       loader.getOrElse(getClass.getClassLoader), // TODO: should we fall back to getClass.getClassLoader?
-      serializer,
-      protocol.getMessagesList.toArray.toList.asInstanceOf[List[RemoteRequestProtocol]])
-      format.fromBinary(protocol.getActorInstance.toByteArray, ar.actor.asInstanceOf[T])
+      protocol.getMessagesList.toArray.toList.asInstanceOf[List[RemoteRequestProtocol]], format)
+      if (format.isInstanceOf[SerializerBasedActorFormat[_]] == false) {
+        format.fromBinary(protocol.getActorInstance.toByteArray, ar.actor.asInstanceOf[T])
+      }
       ar
   }
+}
 
-  private def fromProtobufToRemoteActorRef(protocol: RemoteActorRefProtocol, loader: Option[ClassLoader]): ActorRef = {
+object RemoteActorSerialization {
+  /**
+   * Deserializes a byte array (Array[Byte]) into an RemoteActorRef instance.
+   */
+  def fromBinaryToRemoteActorRef(bytes: Array[Byte]): ActorRef =
+    fromProtobufToRemoteActorRef(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, None)
+
+    /**
+     * Deserializes a byte array (Array[Byte]) into an RemoteActorRef instance.
+     */
+  def fromBinaryToRemoteActorRef(bytes: Array[Byte], loader: ClassLoader): ActorRef =
+    fromProtobufToRemoteActorRef(RemoteActorRefProtocol.newBuilder.mergeFrom(bytes).build, Some(loader))
+
+  /**
+   * Deserializes a RemoteActorRefProtocol Protocol Buffers (protobuf) Message into an RemoteActorRef instance.
+   */
+  private[akka] def fromProtobufToRemoteActorRef(protocol: RemoteActorRefProtocol, loader: Option[ClassLoader]): ActorRef = {
     Actor.log.debug("Deserializing RemoteActorRefProtocol to RemoteActorRef:\n" + protocol)
     RemoteActorRef(
       protocol.getUuid,
@@ -140,5 +170,51 @@ object ActorSerialization {
       protocol.getHomeAddress.getPort,
       protocol.getTimeout,
       loader)
+  }
+
+  /**
+   * Serializes the ActorRef instance into a Protocol Buffers (protobuf) Message.
+   */
+  def toRemoteActorRefProtocol(ar: ActorRef): RemoteActorRefProtocol = {
+    import ar._
+    val host = homeAddress.getHostName
+    val port = homeAddress.getPort
+
+    if (!registeredInRemoteNodeDuringSerialization) {
+      Actor.log.debug("Register serialized Actor [%s] as remote @ [%s:%s]", actorClass.getName, host, port)
+      RemoteServer.getOrCreateServer(homeAddress)
+      RemoteServer.registerActor(homeAddress, uuid, ar)
+      registeredInRemoteNodeDuringSerialization = true
+    }
+    
+    RemoteActorRefProtocol.newBuilder
+      .setUuid(uuid)
+      .setActorClassname(actorClass.getName)
+      .setHomeAddress(AddressProtocol.newBuilder.setHostname(host).setPort(port).build)
+      .setTimeout(timeout)
+      .build
+  }
+
+  def createRemoteRequestProtocolBuilder(ar: ActorRef,
+    message: Any, isOneWay: Boolean, senderOption: Option[ActorRef]): RemoteRequestProtocol.Builder = {
+    import ar._
+    val protocol = RemoteRequestProtocol.newBuilder
+        .setId(RemoteRequestProtocolIdFactory.nextId)
+        .setMessage(MessageSerializer.serialize(message))
+        .setTarget(actorClassName)
+        .setTimeout(timeout)
+        .setUuid(uuid)
+        .setIsActor(true)
+        .setIsOneWay(isOneWay)
+        .setIsEscaped(false)
+
+    val id = registerSupervisorAsRemoteActor
+    if (id.isDefined) protocol.setSupervisorUuid(id.get)
+
+    senderOption.foreach { sender =>
+      RemoteServer.getOrCreateServer(sender.homeAddress).register(sender.uuid, sender)
+      protocol.setSender(toRemoteActorRefProtocol(sender))
+    }
+    protocol
   }
 }
