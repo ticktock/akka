@@ -577,11 +577,12 @@ sealed class LocalActorRef private[akka](
                          __format: Format[_ <: Actor]) = {
       this(() => {
         val actorClass = __loader.loadClass(__actorClassName)
-        if (__format.isInstanceOf[SerializerBasedActorFormat[_]]) {
-          __format.asInstanceOf[SerializerBasedActorFormat[_]].serializer.fromBinary(__actorBytes, Some(actorClass)).asInstanceOf[Actor]
-        } else {
+        if (__format.isInstanceOf[SerializerBasedActorFormat[_]]) 
+          __format.asInstanceOf[SerializerBasedActorFormat[_]]
+                  .serializer
+                  .fromBinary(__actorBytes, Some(actorClass)).asInstanceOf[Actor]
+        else
           actorClass.newInstance.asInstanceOf[Actor]
-        }
       })
       loader = Some(__loader)
       isDeserialized = true
