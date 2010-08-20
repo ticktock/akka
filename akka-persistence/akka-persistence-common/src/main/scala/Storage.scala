@@ -82,24 +82,89 @@ trait Storage {
  */
 trait PersistentMap[K, V] extends scala.collection.mutable.Map[K, V]
   with Transactional with Committable with Abortable with Logging {
-  protected val newAndUpdatedEntries = TransactionalMap[K, V]()
-  protected val removedEntries = TransactionalVector[K]()
   protected val shouldClearOnCommit = Ref[Boolean]()
+
+  // operations on the Map
+  trait Op
+  case object GET extends Op
+  case object PUT extends Op
+  case object REM extends Op
+  case object UPD extends Op
+  case object SIZ extends Op
+
+  // append only log: records all mutating operations
+  protected val appendOnlyTxLog = TransactionalVector[LogEntry]()
+
+  case class LogEntry(key: K, value: Option[V], op: Op)
+
+  // need to override in subclasses e.g. "sameElements" for Array[Byte]
+  def equal(k1: K, k2: K): Boolean = k1 == k2
+
+  // Seqable type that's required for maintaining the log of distinct keys affected in current transaction
+  type T <: Equals
+
+  def toEquals(k: K): T
+
+  // keys affected in the current transaction
+  protected val keysInCurrentTx = TransactionalMap[T, K]()
+
+  protected def addToListOfKeysInTx(key: K): Unit =
+    keysInCurrentTx += (toEquals(key), key)
+
+  protected def clearDistinctKeys = keysInCurrentTx.clear
+
+  protected def filterTxLogByKey(key: K): IndexedSeq[LogEntry] =
+    appendOnlyTxLog filter(e => equal(e.key, key))
+
+  // need to get current value considering the underlying storage as well as the transaction log
+  protected def getCurrentValue(key: K): Option[V] = {
+    // get all mutating entries for this key for this tx
+    val txEntries = filterTxLogByKey(key)
+
+    // get the snapshot from the underlying store for this key
+    val underlying = try {
+      storage.getMapStorageEntryFor(uuid, key)
+    } catch { case e: Exception => None }
+
+    if (txEntries.isEmpty) underlying
+    else replay(txEntries, key, underlying)
+  }
+
+  // replay all tx entries for key k with seed = initial
+  private def replay(txEntries: IndexedSeq[LogEntry], key: K, initial: Option[V]): Option[V] = {
+    import scala.collection.mutable._
+
+    val m = initial match {
+      case None => Map.empty[K, V]
+      case Some(v) => Map((key, v))
+    }
+    txEntries.foreach {case LogEntry(k, v, o) => o match {
+      case PUT => m.put(k, v.get)
+      case REM => m -= k
+      case UPD => m.update(k, v.get)
+    }}
+    m get key
+  }
 
   // to be concretized in subclasses
   val storage: MapStorageBackend[K, V]
 
   def commit = {
     if (shouldClearOnCommit.isDefined && shouldClearOnCommit.get) storage.removeMapStorageFor(uuid)
-    removedEntries.toList.foreach(key => storage.removeMapStorageFor(uuid, key))
-    storage.insertMapStorageEntriesFor(uuid, newAndUpdatedEntries.toList)
-    newAndUpdatedEntries.clear
-    removedEntries.clear
+
+    appendOnlyTxLog.foreach { case LogEntry(k, v, o) => o match {
+      case PUT => storage.insertMapStorageEntryFor(uuid, k, v.get)
+      case UPD => storage.insertMapStorageEntryFor(uuid, k, v.get)
+      case REM => storage.removeMapStorageFor(uuid, k)
+    }}
+
+    appendOnlyTxLog.clear
+    clearDistinctKeys
   }
 
   def abort = {
-    newAndUpdatedEntries.clear
-    removedEntries.clear
+    appendOnlyTxLog.clear
+    clearDistinctKeys
     shouldClearOnCommit.swap(false)
   }
 
@@ -120,72 +185,178 @@ trait PersistentMap[K, V] extends scala.collection.mutable.Map[K, V]
 
   override def put(key: K, value: V): Option[V] = {
     register
-    newAndUpdatedEntries.put(key, value)
+    val curr = getCurrentValue(key)
+    appendOnlyTxLog add LogEntry(key, Some(value), PUT)
+    addToListOfKeysInTx(key)
+    curr
   }
 
   override def update(key: K, value: V) = {
     register
-    newAndUpdatedEntries.update(key, value)
+    val curr = getCurrentValue(key)
+    appendOnlyTxLog add LogEntry(key, Some(value), UPD)
+    addToListOfKeysInTx(key)
+    curr
   }
 
   override def remove(key: K) = {
     register
-    removedEntries.add(key)
-    newAndUpdatedEntries.get(key)
+    val curr = getCurrentValue(key)
+    appendOnlyTxLog add LogEntry(key, None, REM)
+    addToListOfKeysInTx(key)
+    curr
   }
 
-  def slice(start: Option[K], count: Int): List[Tuple2[K, V]] =
+  def slice(start: Option[K], count: Int): List[(K, V)] =
     slice(start, None, count)
 
-  def slice(start: Option[K], finish: Option[K], count: Int): List[Tuple2[K, V]] = try {
-    storage.getMapStorageRangeFor(uuid, start, finish, count)
-  } catch { case e: Exception => Nil }
+  def slice(start: Option[K], finish: Option[K], count: Int): List[(K, V)]
 
   override def clear = {
     register
+    appendOnlyTxLog.clear
+    clearDistinctKeys
     shouldClearOnCommit.swap(true)
   }
 
   override def contains(key: K): Boolean = try {
-    newAndUpdatedEntries.contains(key) ||
-    storage.getMapStorageEntryFor(uuid, key).isDefined
+    filterTxLogByKey(key) match {
+      case Seq() => // current tx doesn't use this
+        storage.getMapStorageEntryFor(uuid, key).isDefined // check storage
+      case txs => // present in log
+        txs.last.op != REM // last entry cannot be a REM
+      }
   } catch { case e: Exception => false }
 
-  override def size: Int = try {
-    storage.getMapStorageSizeFor(uuid)
-  } catch { case e: Exception => 0 }
-
-  override def get(key: K): Option[V] = {
-    if (newAndUpdatedEntries.contains(key)) {
-      newAndUpdatedEntries.get(key)
-    }
-    else try {
-      storage.getMapStorageEntryFor(uuid, key)
-    } catch { case e: Exception => None }
+  protected def existsInStorage(key: K): Option[V] = try {
+    storage.getMapStorageEntryFor(uuid, key)
+  } catch {
+    case e: Exception => None
   }
+
+  override def size: Int = try {
+    // partition key set affected in current tx into those which r added & which r deleted
+    val (keysAdded, keysRemoved) = keysInCurrentTx.map { 
+      case (kseq, k) => ((kseq, k), getCurrentValue(k))
+    }.partition(_._2.isDefined)
+
+    // keys which existed in storage but removed in current tx
+    val inStorageRemovedInTx = 
+      keysRemoved.keySet
+                 .map(_._2)
+                 .filter(k => existsInStorage(k).isDefined)
+                 .size
+
+    // all keys in storage
+    val keysInStorage = 
+      storage.getMapStorageFor(uuid)
+             .map { case (k, v) => toEquals(k) }
+             .toSet
+
+    // (keys that existed UNION keys added ) - (keys removed)
+    (keysInStorage union keysAdded.keySet.map(_._1)).size - inStorageRemovedInTx
+  } catch { 
+    case e: Exception => 0 
+  }
+
+  // get must consider underlying storage & current uncommitted tx log
+  override def get(key: K): Option[V] = getCurrentValue(key)
 
   def iterator = elements
-
-  override def elements: Iterator[Tuple2[K, V]]  = {
-    new Iterator[Tuple2[K, V]] {
-      private val originalList: List[Tuple2[K, V]] = try {
-        storage.getMapStorageFor(uuid)
-      } catch {
-        case e: Throwable => Nil
-      }
-      private var elements = newAndUpdatedEntries.toList union originalList.reverse
-      override def next: Tuple2[K, V]= synchronized {
-        val element = elements.head
-        elements = elements.tail
-        element
-      }
-      override def hasNext: Boolean = synchronized { !elements.isEmpty }
-    }
-  }
+  def elements: Iterator[Tuple2[K, V]] 
 
   private def register = {
     if (transaction.get.isEmpty) throw new NoTransactionInScopeException
     transaction.get.get.register(uuid, this)
+  }
+}
+
+trait PersistentMapBinary extends PersistentMap[Array[Byte], Array[Byte]] {
+  import scala.collection.mutable.ArraySeq
+
+  type T = ArraySeq[Byte]
+  def toEquals(k: Array[Byte]) = ArraySeq(k: _*)
+  override def equal(k1: Array[Byte], k2: Array[Byte]): Boolean = k1 sameElements k2
+
+  object COrdering {
+    implicit object ArraySeqOrdering extends Ordering[ArraySeq[Byte]] {
+      def compare(o1: ArraySeq[Byte], o2: ArraySeq[Byte]) = 
+        new String(o1.toArray) compare new String(o2.toArray)
+    }
+  }
+
+  import scala.collection.immutable.{TreeMap, SortedMap}
+  private def replayAllKeys: SortedMap[ArraySeq[Byte], Array[Byte]] = {
+    import COrdering._
+
+    // need ArraySeq for ordering
+    val fromStorage = 
+      TreeMap(storage.getMapStorageFor(uuid).map { case (k, v) => (ArraySeq(k: _*), v) }: _*)
+
+    val (keysAdded, keysRemoved) = keysInCurrentTx.map { 
+      case (_, k) => (k, getCurrentValue(k))
+    }.partition(_._2.isDefined)
+
+    val inStorageRemovedInTx = 
+      keysRemoved.keySet
+                 .filter(k => existsInStorage(k).isDefined)
+                 .map(k => ArraySeq(k: _*))
+
+    (fromStorage -- inStorageRemovedInTx) ++ keysAdded.map { case (k, Some(v)) => (ArraySeq(k: _*), v) }
+  }
+
+  override def slice(start: Option[Array[Byte]], finish: Option[Array[Byte]], count: Int): List[(Array[Byte], Array[Byte])] = try {
+    val newMap = replayAllKeys
+
+    if (newMap isEmpty) List[(Array[Byte], Array[Byte])]()
+
+    val startKey =
+      start match {
+        case Some(bytes) => Some(ArraySeq(bytes: _*))
+        case None => None
+      }
+
+    val endKey =
+      finish match {
+        case Some(bytes) => Some(ArraySeq(bytes: _*))
+        case None => None
+      }
+
+    ((startKey, endKey, count): @unchecked) match {
+      case ((Some(s), Some(e), _)) =>
+        newMap.range(s, e)
+              .toList
+              .map(e => (e._1.toArray, e._2))
+              .toList
+      case ((Some(s), None, c)) if c > 0 =>
+        newMap.from(s)
+              .iterator
+              .take(count)
+              .map(e => (e._1.toArray, e._2))
+              .toList
+      case ((Some(s), None, _)) =>
+        newMap.from(s)
+              .toList
+              .map(e => (e._1.toArray, e._2))
+              .toList
+      case ((None, Some(e), _)) =>
+        newMap.until(e)
+              .toList
+              .map(e => (e._1.toArray, e._2))
+              .toList
+    }
+  } catch { case e: Exception => Nil }
+
+  override def elements: Iterator[(Array[Byte], Array[Byte])]  = {
+    new Iterator[(Array[Byte], Array[Byte])] {
+      private var elements = replayAllKeys
+      override def next: (Array[Byte], Array[Byte]) = synchronized {
+        val (k, v) = elements.head
+        elements = elements.tail
+        (k.toArray, v)
+      }
+      override def hasNext: Boolean = synchronized { !elements.isEmpty }
+    }
   }
 }
 
