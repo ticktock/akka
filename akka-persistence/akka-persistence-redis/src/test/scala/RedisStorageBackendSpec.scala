@@ -124,6 +124,7 @@ class RedisStorageBackendSpec extends
       insertVectorStorageEntryFor("T-3", "debasish".getBytes)
       insertVectorStorageEntryFor("T-3", "maulindu".getBytes)
       insertVectorStorageEntryFor("T-3", "1200".getBytes)
+      getVectorStorageRangeFor("T-3", None, None, 3).map(new String(_)) should equal(List("1200", "maulindu", "debasish"))
 
       val dt = Calendar.getInstance.getTime.getTime
       insertVectorStorageEntryFor("T-3", toByteArray[Long](dt))

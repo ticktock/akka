@@ -90,7 +90,6 @@ trait PersistentMap[K, V] extends scala.collection.mutable.Map[K, V]
   case object PUT extends Op
   case object REM extends Op
   case object UPD extends Op
-  case object SIZ extends Op
 
   // append only log: records all mutating operations
   protected val appendOnlyTxLog = TransactionalVector[LogEntry]()
@@ -103,6 +102,7 @@ trait PersistentMap[K, V] extends scala.collection.mutable.Map[K, V]
   // Seqable type that's required for maintaining the log of distinct keys affected in current transaction
   type T <: Equals
 
+  // converts key K to the Seqable type Equals
   def toEquals(k: K): T
 
   // keys affected in the current transaction
@@ -262,8 +262,7 @@ trait PersistentMap[K, V] extends scala.collection.mutable.Map[K, V]
   // get must consider underlying storage & current uncommitted tx log
   override def get(key: K): Option[V] = getCurrentValue(key)
 
-  def iterator = elements
-  def elements: Iterator[Tuple2[K, V]] 
+  def iterator: Iterator[Tuple2[K, V]] 
 
   private def register = {
     if (transaction.get.isEmpty) throw new NoTransactionInScopeException
@@ -347,7 +346,7 @@ trait PersistentMapBinary extends PersistentMap[Array[Byte], Array[Byte]] {
     }
   } catch { case e: Exception => Nil }
 
-  override def elements: Iterator[(Array[Byte], Array[Byte])]  = {
+  override def iterator: Iterator[(Array[Byte], Array[Byte])]  = {
     new Iterator[(Array[Byte], Array[Byte])] {
       private var elements = replayAllKeys
       override def next: (Array[Byte], Array[Byte]) = synchronized {
@@ -371,42 +370,82 @@ trait PersistentVector[T] extends IndexedSeq[T] with Transactional with Committa
   protected val removedElems = TransactionalVector[T]()
   protected val shouldClearOnCommit = Ref[Boolean]()
 
+  // operations on the Vector
+  trait Op
+  case object ADD extends Op
+  case object UPD extends Op
+  case object POP extends Op
+
+  // append only log: records all mutating operations
+  protected val appendOnlyTxLog = TransactionalVector[LogEntry]()
+
+  case class LogEntry(index: Option[Int], value: Option[T], op: Op)
+
+  // need to override in subclasses e.g. "sameElements" for Array[Byte]
+  def equal(v1: T, v2: T): Boolean = v1 == v2
+
   val storage: VectorStorageBackend[T]
 
   def commit = {
-    for (element <- newElems) storage.insertVectorStorageEntryFor(uuid, element)
-    for (entry <- updatedElems) storage.updateVectorStorageEntryFor(uuid, entry._1, entry._2)
-    newElems.clear
-    updatedElems.clear
+    for(entry <- appendOnlyTxLog) {
+      entry match {
+        case LogEntry(_, Some(v), ADD) => storage.insertVectorStorageEntryFor(uuid, v)
+        case LogEntry(Some(i), Some(v), UPD) => storage.updateVectorStorageEntryFor(uuid, i, v)
+        case LogEntry(_, _, POP) => //..
+      }
+    }
+    appendOnlyTxLog.clear
   }
 
   def abort = {
-    newElems.clear
-    updatedElems.clear
-    removedElems.clear
+    appendOnlyTxLog.clear
     shouldClearOnCommit.swap(false)
+  }
+
+  private def replay: List[T] = {
+    import scala.collection.mutable.ArrayBuffer
+    var elemsStorage = ArrayBuffer(storage.getVectorStorageRangeFor(uuid, None, None, storage.getVectorStorageSizeFor(uuid)).reverse: _*)
+    for(entry <- appendOnlyTxLog) {
+      entry match {
+        case LogEntry(_, Some(v), ADD) => elemsStorage += v
+        case LogEntry(Some(i), Some(v), UPD) => elemsStorage.update(i, v)
+        case LogEntry(_, _, POP) => elemsStorage = elemsStorage.drop(1)
+      }
+    }
+    elemsStorage.toList.reverse
   }
 
   def +(elem: T) = add(elem)
 
   def add(elem: T) = {
     register
-    newElems + elem
+    appendOnlyTxLog + LogEntry(None, Some(elem), ADD)
   }
 
   def apply(index: Int): T = get(index)
 
   def get(index: Int): T = {
-    if (newElems.size > index) newElems(index)
-    else storage.getVectorStorageEntryFor(uuid, index)
+    if (appendOnlyTxLog.isEmpty) {
+      storage.getVectorStorageEntryFor(uuid, index)
+    } else {
+      val curr = replay
+      curr(index)
+    }
   }
 
   override def slice(start: Int, finish: Int): IndexedSeq[T] = slice(Some(start), Some(finish))
 
   def slice(start: Option[Int], finish: Option[Int], count: Int = 0): IndexedSeq[T] = {
-    val buffer = new scala.collection.mutable.ArrayBuffer[T]
-    storage.getVectorStorageRangeFor(uuid, start, finish, count).foreach(buffer.append(_))
-    buffer
+    val curr = replay
+    val s = if (start.isDefined) start.get else 0
+    val cnt =
+      if (finish.isDefined) {
+        val f = finish.get
+        if (f >= s) (f - s) else count
+      }
+      else count
+    if (s == 0 && cnt == 0) List().toIndexedSeq
+    else curr.slice(s, s + cnt).toIndexedSeq
   }
 
   /**
@@ -414,12 +453,13 @@ trait PersistentVector[T] extends IndexedSeq[T] with Transactional with Committa
    */
   def pop: T = {
     register
+    appendOnlyTxLog + LogEntry(None, None, POP)
     throw new UnsupportedOperationException("PersistentVector::pop is not implemented")
   }
 
   def update(index: Int, newElem: T) = {
     register
-    storage.updateVectorStorageEntryFor(uuid, index, newElem)
+    appendOnlyTxLog + LogEntry(Some(index), Some(newElem), UPD)
   }
 
   override def first: T = get(0)
@@ -433,7 +473,7 @@ trait PersistentVector[T] extends IndexedSeq[T] with Transactional with Committa
     }
   }
 
-  def length: Int = storage.getVectorStorageSizeFor(uuid) + newElems.length
+  def length: Int = replay.length
 
   private def register = {
     if (transaction.get.isEmpty) throw new NoTransactionInScopeException
