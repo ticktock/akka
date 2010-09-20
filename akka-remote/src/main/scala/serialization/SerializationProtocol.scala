@@ -36,7 +36,7 @@ trait Format[T <: Actor] extends FromBinary[T] with ToBinary[T]
  * Create a Format object with the client actor as the implementation of the type class
  *
  * <pre>
- * object BinaryFormatMyStatelessActor  {
+ * object BinaryFormatMyStatelessActor {
  *   implicit object MyStatelessActorFormat extends StatelessActorFormat[MyStatelessActor]
  * }
  * </pre>
@@ -54,7 +54,7 @@ trait StatelessActorFormat[T <: Actor] extends Format[T] {
  * a serializer object
  *
  * <pre>
- * object BinaryFormatMyJavaSerializableActor  {
+ * object BinaryFormatMyJavaSerializableActor {
  *   implicit object MyJavaSerializableActorFormat extends SerializerBasedActorFormat[MyJavaSerializableActor]  {
  *     val serializer = Serializer.Java
  * }
@@ -88,7 +88,7 @@ object ActorSerialization {
     toBinary(a)(format)
 
   private[akka] def toSerializedActorRefProtocol[T <: Actor](
-      actorRef: ActorRef, format: Format[T]): SerializedActorRefProtocol = {
+    actorRef: ActorRef, format: Format[T]): SerializedActorRefProtocol = {
     val lifeCycleProtocol: Option[LifeCycleProtocol] = {
       def setScope(builder: LifeCycleProtocol.Builder, scope: Scope) = scope match {
         case Permanent => builder.setLifeCycle(LifeCycleType.PERMANENT)
@@ -104,17 +104,17 @@ object ActorSerialization {
     }
 
     val originalAddress = AddressProtocol.newBuilder
-        .setHostname(actorRef.homeAddress.getHostName)
-        .setPort(actorRef.homeAddress.getPort)
-        .build
+      .setHostname(actorRef.homeAddress.getHostName)
+      .setPort(actorRef.homeAddress.getPort)
+      .build
 
     val builder = SerializedActorRefProtocol.newBuilder
-        .setUuid(actorRef.uuid)
-        .setId(actorRef.id)
-        .setActorClassname(actorRef.actorClass.getName)
-        .setOriginalAddress(originalAddress)
-        .setIsTransactor(actorRef.isTransactor)
-        .setTimeout(actorRef.timeout)
+      .setUuid(actorRef.uuid)
+      .setId(actorRef.id)
+      .setActorClassname(actorRef.actorClass.getName)
+      .setOriginalAddress(originalAddress)
+      .setIsTransactor(actorRef.isTransactor)
+      .setTimeout(actorRef.timeout)
 
     actorRef.receiveTimeout.foreach(builder.setReceiveTimeout(_))
     builder.setActorInstance(ByteString.copyFrom(format.toBinary(actorRef.actor.asInstanceOf[T])))
@@ -232,11 +232,11 @@ object RemoteActorSerialization {
     }
 
     RemoteActorRefProtocol.newBuilder
-        .setUuid(uuid)
-        .setActorClassname(actorClass.getName)
-        .setHomeAddress(AddressProtocol.newBuilder.setHostname(host).setPort(port).build)
-        .setTimeout(timeout)
-        .build
+      .setUuid(uuid)
+      .setActorClassname(actorClass.getName)
+      .setHomeAddress(AddressProtocol.newBuilder.setHostname(host).setPort(port).build)
+      .setTimeout(timeout)
+      .build
   }
 
   def createRemoteRequestProtocolBuilder(
@@ -250,18 +250,18 @@ object RemoteActorSerialization {
     import actorRef._
 
     val actorInfoBuilder = ActorInfoProtocol.newBuilder
-        .setUuid(uuid)
-        .setId(actorRef.id)
-        .setTarget(actorClassName)
-        .setTimeout(timeout)
+      .setUuid(uuid)
+      .setId(actorRef.id)
+      .setTarget(actorClassName)
+      .setTimeout(timeout)
 
     typedActorInfo.foreach {
       typedActor =>
         actorInfoBuilder.setTypedActorInfo(
           TypedActorInfoProtocol.newBuilder
-              .setInterface(typedActor._1)
-              .setMethod(typedActor._2)
-              .build)
+            .setInterface(typedActor._1)
+            .setMethod(typedActor._2)
+            .build)
     }
 
     actorType match {
@@ -271,10 +271,10 @@ object RemoteActorSerialization {
     val actorInfo = actorInfoBuilder.build
 
     val requestBuilder = RemoteRequestProtocol.newBuilder
-        .setId(RemoteRequestProtocolIdFactory.nextId)
-        .setMessage(MessageSerializer.serialize(message))
-        .setActorInfo(actorInfo)
-        .setIsOneWay(isOneWay)
+      .setId(RemoteRequestProtocolIdFactory.nextId)
+      .setMessage(MessageSerializer.serialize(message))
+      .setActorInfo(actorInfo)
+      .setIsOneWay(isOneWay)
 
     val id = registerSupervisorAsRemoteActor
     if (id.isDefined) requestBuilder.setSupervisorUuid(id.get)
@@ -318,9 +318,9 @@ object TypedActorSerialization {
     if (init == null) throw new IllegalArgumentException("Proxy for typed actor could not be found in AspectInitRegistry.")
 
     SerializedTypedActorRefProtocol.newBuilder
-        .setActorRef(ActorSerialization.toSerializedActorRefProtocol(init.actorRef, format))
-        .setInterfaceName(init.interfaceClass.getName)
-        .build
+      .setActorRef(ActorSerialization.toSerializedActorRefProtocol(init.actorRef, format))
+      .setInterfaceName(init.interfaceClass.getName)
+      .build
   }
 
   private def fromBinaryToLocalTypedActorRef[T <: Actor, U <: AnyRef](bytes: Array[Byte], format: Format[T]): U =
@@ -380,9 +380,9 @@ object RemoteTypedActorSerialization {
   def toRemoteTypedActorRefProtocol(proxy: AnyRef): RemoteTypedActorRefProtocol = {
     val init = AspectInitRegistry.initFor(proxy)
     RemoteTypedActorRefProtocol.newBuilder
-        .setActorRef(RemoteActorSerialization.toRemoteActorRefProtocol(init.actorRef))
-        .setInterfaceName(init.interfaceClass.getName)
-        .build
+      .setActorRef(RemoteActorSerialization.toRemoteActorRefProtocol(init.actorRef))
+      .setInterfaceName(init.interfaceClass.getName)
+      .build
   }
 
 }
