@@ -12,6 +12,7 @@ import akka.util.Switch
 import akka.util.Helpers._
 import akka.cluster.zookeeper.AkkaZkClient
 
+import coordination.CoordinationLockListener
 import org.apache.zookeeper.CreateMode
 import org.apache.zookeeper.recipes.lock.{ WriteLock, LockListener }
 
@@ -21,6 +22,7 @@ import scala.collection.immutable.Seq
 import scala.collection.JavaConversions.collectionAsScalaIterable
 
 import java.util.concurrent.{ CountDownLatch, TimeUnit }
+import storage.DataExistsException
 
 /**
  * A ClusterDeployer is responsible for deploying a Deploy.
@@ -46,13 +48,9 @@ object ClusterDeployer extends ActorDeployer {
   private val isConnected = new Switch(false)
   private val deploymentCompleted = new CountDownLatch(1)
 
-  private val zkClient = new AkkaZkClient(
-    Cluster.zooKeeperServers,
-    Cluster.sessionTimeout,
-    Cluster.connectionTimeout,
-    Cluster.defaultZooKeeperSerializer)
+  private val coordination = Cluster.newCoordinationClient()
 
-  private val deploymentInProgressLockListener = new LockListener {
+  private val deploymentInProgressLockListener = new CoordinationLockListener {
     def lockAcquired() {
       EventHandler.debug(this, "Clustered deployment started")
     }
@@ -63,11 +61,7 @@ object ClusterDeployer extends ActorDeployer {
     }
   }
 
-  private val deploymentInProgressLock = new WriteLock(
-    zkClient.connection.getZookeeper,
-    deploymentInProgressLockPath,
-    null,
-    deploymentInProgressLockListener)
+  private val deploymentInProgressLock = coordination.getLock(deploymentInProgressLockPath, deploymentInProgressLockListener)
 
   private val systemDeployments: List[Deploy] = Nil
 
@@ -76,9 +70,9 @@ object ClusterDeployer extends ActorDeployer {
       // undeploy all
       try {
         for {
-          child ← collectionAsScalaIterable(zkClient.getChildren(deploymentPath))
-          deployment ← zkClient.readData(deploymentAddressPath.format(child)).asInstanceOf[Deploy]
-        } zkClient.delete(deploymentAddressPath.format(deployment.address))
+          child ← coordination.getChildren(deploymentPath)
+          deployment ← coordination.read(deploymentAddressPath.format(child)).asInstanceOf[Deploy]
+        } coordination.delete(deploymentAddressPath.format(deployment.address))
 
         invalidateDeploymentInCluster()
       } catch {
@@ -87,7 +81,7 @@ object ClusterDeployer extends ActorDeployer {
       }
 
       // shut down ZooKeeper client
-      zkClient.close()
+      coordination.close()
       EventHandler.info(this, "ClusterDeployer shut down successfully")
     }
   }
@@ -99,7 +93,7 @@ object ClusterDeployer extends ActorDeployer {
       case None ⇒ // not in cache, check cluster
         val deployment =
           try {
-            Some(zkClient.readData(deploymentAddressPath.format(address)).asInstanceOf[Deploy])
+            Some(coordination.read(deploymentAddressPath.format(address)).asInstanceOf[Deploy])
           } catch {
             case e: ZkNoNodeException ⇒ None
             case e: Exception ⇒
@@ -114,12 +108,12 @@ object ClusterDeployer extends ActorDeployer {
   def fetchDeploymentsFromCluster: List[Deploy] = ensureRunning {
     val addresses =
       try {
-        zkClient.getChildren(deploymentPath).toList
+        coordination.getChildren(deploymentPath).toList
       } catch {
         case e: ZkNoNodeException ⇒ List[String]()
       }
     val deployments = addresses map { address ⇒
-      zkClient.readData(deploymentAddressPath.format(address)).asInstanceOf[Deploy]
+      coordination.read(deploymentAddressPath.format(address)).asInstanceOf[Deploy]
     }
     EventHandler.info(this, "Fetched deployment plan from cluster [\n\t%s\n]" format deployments.mkString("\n\t"))
     deployments
@@ -131,7 +125,7 @@ object ClusterDeployer extends ActorDeployer {
 
       basePaths foreach { path ⇒
         try {
-          ignore[ZkNodeExistsException](zkClient.create(path, null, CreateMode.PERSISTENT))
+          ignore[DataExistsException](coordination.writeData(path, Array.empty[Byte]))
           EventHandler.debug(this, "Created ZooKeeper path for deployment [%s]".format(path))
         } catch {
           case e ⇒
@@ -172,8 +166,8 @@ object ClusterDeployer extends ActorDeployer {
           }*/
           val path = deploymentAddressPath.format(address)
           try {
-            ignore[ZkNodeExistsException](zkClient.create(path, null, CreateMode.PERSISTENT))
-            zkClient.writeData(path, deployment)
+            ignore[DataExistsException](coordination.writeData(path, Array.empty[Byte]))
+            coordination.write(path, deployment)
           } catch {
             case e: NullPointerException ⇒
               handleError(new DeploymentException("Could not store deployment data [" + deployment + "] in ZooKeeper since client session is closed"))
@@ -185,14 +179,14 @@ object ClusterDeployer extends ActorDeployer {
   }
 
   private def markDeploymentCompletedInCluster() {
-    ignore[ZkNodeExistsException](zkClient.create(isDeploymentCompletedInClusterLockPath, null, CreateMode.PERSISTENT))
+    ignore[DataExistsException](coordination.writeData(isDeploymentCompletedInClusterLockPath, Array.empty[Byte]))
   }
 
-  private def isDeploymentCompletedInCluster = zkClient.exists(isDeploymentCompletedInClusterLockPath)
+  private def isDeploymentCompletedInCluster = coordination.exists(isDeploymentCompletedInClusterLockPath)
 
   // FIXME in future - add watch to this path to be able to trigger redeployment, and use this method to trigger redeployment
   private def invalidateDeploymentInCluster() {
-    ignore[ZkNoNodeException](zkClient.delete(isDeploymentCompletedInClusterLockPath))
+    ignore[ZkNoNodeException](coordination.delete(isDeploymentCompletedInClusterLockPath))
   }
 
   private def ensureRunning[T](body: ⇒ T): T = {

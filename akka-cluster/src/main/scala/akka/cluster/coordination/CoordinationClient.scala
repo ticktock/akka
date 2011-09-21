@@ -8,13 +8,9 @@ trait CoordinationClient {
 
   type ToStorageException = PartialFunction[Exception, StorageException]
 
+  def serverAddresses: String
+
   def exists(path: String): Boolean
-
-  def createPersistent(path: String, value: Array[Byte])
-
-  def createEphemeralSequential(path: String, value: Array[Byte]): String
-
-  def createEphemeral(path: String, value: Array[Byte])
 
   def readData(path: String): VersionedData
 
@@ -22,7 +18,23 @@ trait CoordinationClient {
 
   def writeData(path: String, value: Array[Byte], expectedVersion: Long): VersionedData
 
-  def forceWriteData(path: String, value: Array[Byte]): VersionedData
+  def writeData(path: String, value: Array[Byte]): VersionedData
+
+  def overwriteData(path: String, value: Array[Byte]): VersionedData
+
+  def read[T](path: String): T
+
+  def readWithVersion(path: String): (Any, Long)
+
+  def write(path: String, value: Any)
+
+  def write(path: String, value: Any, version: Long)
+
+  def writeEphemeral(path: String, value: Any)
+
+  def writeEphemeralSequential(path: String, value: Any): String
+
+  def overwrite(path: String, value: Any)
 
   def delete(path: String): Boolean
 
@@ -37,8 +49,16 @@ trait CoordinationClient {
   def listenToConnection(listener: CoordinationConnectionListener)
 
   def stopListenToConnection(listener: CoordinationConnectionListener)
-  //def retryUntilConnected   ?
+
+  def stopListenAll()
+
+  def retryUntilConnected[T](code: ⇒ T): T
+
+  def reconnect()
+
   def close()
+
+  def getLock(path: String, listener: CoordinationLockListener): CoordinationLock
 
   def defaultStorageException: ToStorageException = {
     case underlying: Exception ⇒ new StorageException("Unexpected exception from the underlying storage impl", underlying)
@@ -96,6 +116,38 @@ trait CoordinationNodeListener {
 trait CoordinationConnectionListener {
 
   def handleEvent(event: ChangeNotification)
+
+}
+
+trait CoordinationSerializer {
+  def deserialize(bytes: Array[Byte]): Any
+
+  def serialize(serializable: Any): Array[Byte]
+}
+
+trait CoordinationLockListener {
+
+  def lockAcquired()
+
+  def lockReleased()
+
+}
+
+trait CoordinationLock {
+
+  def getId: String
+
+  def isOwner: Boolean
+
+  def lock(): Boolean
+
+  def unlock()
+
+}
+
+trait CoordinationClientFactory {
+
+  def createClient(servers: String): CoordinationClient
 
 }
 

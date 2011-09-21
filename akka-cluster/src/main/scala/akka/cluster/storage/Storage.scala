@@ -113,7 +113,7 @@ trait Storage {
 /**
  * The VersionedData is a container of data (some bytes) and a version (a Long).
  */
-class VersionedData(val data: Array[Byte], val version: Long) {}
+class VersionedData(val data: Array[Byte], val version: Long)
 
 /**
  * An AkkaException thrown by the Storage module.

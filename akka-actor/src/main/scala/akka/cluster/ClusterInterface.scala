@@ -195,7 +195,7 @@ trait ClusterNode {
 
   def nodeAddress: NodeAddress
 
-  def zkServerAddresses: String
+  def coordinationServerAddresses: String
 
   def remoteService: RemoteSupport
 

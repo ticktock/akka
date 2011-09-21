@@ -4,27 +4,17 @@
 
 package akka.cluster
 
-import org.apache.zookeeper._
-import org.apache.zookeeper.Watcher.Event._
-import org.apache.zookeeper.data.Stat
-import org.apache.zookeeper.recipes.lock.{ WriteLock, LockListener }
-
-import org.I0Itec.zkclient._
-import org.I0Itec.zkclient.serialize._
-import org.I0Itec.zkclient.exception._
-
+import coordination._
 import java.util.{ List ⇒ JList }
 import java.util.concurrent.atomic.{ AtomicBoolean, AtomicReference }
-import java.util.concurrent.{ CopyOnWriteArrayList, Callable, ConcurrentHashMap }
+import java.util.concurrent.{ CopyOnWriteArrayList, Callable }
 import javax.management.StandardMBean
 import java.net.InetSocketAddress
 
-import scala.collection.mutable.ConcurrentMap
 import scala.collection.JavaConversions._
 import scala.annotation.tailrec
 
 import akka.util._
-import duration._
 import Helpers._
 
 import akka.actor._
@@ -35,17 +25,16 @@ import DeploymentConfig._
 import akka.event.EventHandler
 import akka.dispatch.{ Dispatchers, Future, PinnedDispatcher }
 import akka.config.{ Config, Supervision }
+import storage.{ DataExistsException, MissingDataException }
 import Supervision._
 import Config._
 
-import akka.serialization.{ Serialization, Serializer, ActorSerialization, Compression }
+import akka.serialization._
 import ActorSerialization._
 import Compression.LZF
 
 import akka.routing._
-import akka.cluster._
 import akka.cluster.metrics._
-import akka.cluster.zookeeper._
 import ChangeListener._
 import RemoteProtocol._
 import RemoteDaemonMessageType._
@@ -79,7 +68,7 @@ trait ClusterNodeMBean {
 
   def getClusterName: String
 
-  def getZooKeeperServerAddresses: String
+  def getCoordinationServerAddresses: String
 
   def getMemberNodes: Array[String]
 
@@ -149,16 +138,16 @@ object Cluster {
 
   // config options
   val name = Config.clusterName
-  val zooKeeperServers = config.getString("akka.cluster.zookeeper-server-addresses", "localhost:2181")
+  val coordinationFactoryClass = config.getString("akka.cluster.coordination-factory", "akka.cluster.zookeeper.ZookeeperCoordinationClientFactory")
+  val coordinationServerAddresses = config.getString("akka.cluster.coordination-server-addresses", "localhost:2181")
   val remoteServerPort = config.getInt("akka.cluster.remote-server-port", 2552)
-  val sessionTimeout = Duration(config.getInt("akka.cluster.session-timeout", 60), TIME_UNIT).toMillis.toInt
   val metricsRefreshInterval = Duration(config.getInt("akka.cluster.metrics-refresh-timeout", 2), TIME_UNIT)
-  val connectionTimeout = Duration(config.getInt("akka.cluster.connection-timeout", 60), TIME_UNIT).toMillis.toInt
   val maxTimeToWaitUntilConnected = Duration(config.getInt("akka.cluster.max-time-to-wait-until-connected", 30), TIME_UNIT).toMillis.toInt
   val shouldCompressData = config.getBool("akka.cluster.use-compression", false)
   val enableJMX = config.getBool("akka.enable-jmx", true)
   val remoteDaemonAckTimeout = Duration(config.getInt("akka.cluster.remote-daemon-ack-timeout", 30), TIME_UNIT).toMillis.toInt
   val includeRefNodeInReplicaSet = config.getBool("akka.cluster.include-ref-node-in-replica-set", true)
+  val coordinationFactory = ReflectiveAccess.createInstance[CoordinationClientFactory](coordinationFactoryClass, Array[Class[_]](), Array[AnyRef]()).right.get
 
   @volatile
   private var properties = Map.empty[String, String]
@@ -191,7 +180,7 @@ object Cluster {
     case None           ⇒ Config.remoteServerPort
   }
 
-  val defaultZooKeeperSerializer = new SerializableSerializer
+  //val defaultZooKeeperSerializer = new SerializableSerializer
 
   /**
    * The node address.
@@ -203,14 +192,13 @@ object Cluster {
    */
   val node = {
     if (nodeAddress eq null) throw new IllegalArgumentException("NodeAddress can't be null")
-    new DefaultClusterNode(nodeAddress, hostname, port, zooKeeperServers, defaultZooKeeperSerializer)
+    new DefaultClusterNode(nodeAddress, hostname, port, newCoordinationClient())
   }
 
   /**
    * Creates a new AkkaZkClient.
    */
-  def newZkClient(): AkkaZkClient = new AkkaZkClient(zooKeeperServers, sessionTimeout, connectionTimeout, defaultZooKeeperSerializer)
-
+  def newCoordinationClient(): CoordinationClient = coordinationFactory.createClient(coordinationServerAddresses)
   def uuidToString(uuid: UUID): String = uuid.toString
 
   def stringToUuid(uuid: String): UUID = {
@@ -265,8 +253,7 @@ class DefaultClusterNode private[akka] (
   val nodeAddress: NodeAddress,
   val hostname: String = Config.hostname,
   val port: Int = Config.remoteServerPort,
-  val zkServerAddresses: String,
-  val serializer: ZkSerializer) extends ErrorHandler with ClusterNode {
+  val coordination: CoordinationClient) extends ErrorHandler with ClusterNode {
   self ⇒
 
   if ((hostname eq null) || hostname == "") throw new NullPointerException("Host name must not be null or empty string")
@@ -278,6 +265,8 @@ class DefaultClusterNode private[akka] (
   import Cluster._
 
   //  private val connectToAllNewlyArrivedMembershipNodesInClusterLock = new AtomicBoolean(false)
+
+  def coordinationServerAddresses: String = coordination.serverAddresses
 
   private[cluster] lazy val remoteClientLifeCycleHandler = actorOf(Props(new Actor {
     def receive = {
@@ -308,7 +297,7 @@ class DefaultClusterNode private[akka] (
 
   lazy val remoteServerAddress: InetSocketAddress = remoteService.address
 
-  lazy val metricsManager: NodeMetricsManager = new LocalNodeMetricsManager(zkClient, Cluster.metricsRefreshInterval).start()
+  lazy val metricsManager: NodeMetricsManager = new LocalNodeMetricsManager(coordination, Cluster.metricsRefreshInterval).start()
 
   // static nodes
   val CLUSTER_PATH = "/" + nodeAddress.clusterName
@@ -363,10 +352,10 @@ class DefaultClusterNode private[akka] (
   private val isShutdownFlag = new AtomicBoolean(false)
 
   // ZooKeeper client
-  private[cluster] val zkClient = new AkkaZkClient(zkServerAddresses, sessionTimeout, connectionTimeout, serializer)
+  //private[cluster] val zkClient = new AkkaZkClient(zkServerAddresses, sessionTimeout, connectionTimeout, serializer)
 
   // leader election listener, registered to the 'leaderLock' below
-  private[cluster] val leaderElectionCallback = new LockListener {
+  private[cluster] val leaderElectionCallback = new CoordinationLockListener {
     override def lockAcquired() {
       EventHandler.info(this, "Node [%s] is the new leader".format(self.nodeAddress.nodeName))
       self.publish(NewLeader(self.nodeAddress.nodeName))
@@ -378,10 +367,7 @@ class DefaultClusterNode private[akka] (
   }
 
   // leader election lock in ZooKeeper
-  private[cluster] val leaderLock = new WriteLock(
-    zkClient.connection.getZookeeper,
-    LEADER_ELECTION_PATH, null,
-    leaderElectionCallback)
+  private[cluster] val leaderLock = coordination.getLock(LEADER_ELECTION_PATH, leaderElectionCallback)
 
   if (enableJMX) createMBean
 
@@ -397,9 +383,9 @@ class DefaultClusterNode private[akka] (
         "\n\tcluster name = [%s]" +
         "\n\tnode name = [%s]" +
         "\n\tport = [%s]" +
-        "\n\tzookeeper server addresses = [%s]" +
-        "\n\tserializer = [%s]")
-        .format(nodeAddress.clusterName, nodeAddress.nodeName, port, zkServerAddresses, serializer))
+        "\n\tcoordination server addresses = [%s]" +
+        "\n\tcoordination client = [%s]")
+        .format(nodeAddress.clusterName, nodeAddress.nodeName, port, coordinationServerAddresses, coordination.getClass.getSimpleName))
     EventHandler.info(this, "Starting up remote server [%s]".format(remoteServerAddress.toString))
     createZooKeeperPathStructureIfNeeded()
     registerListeners()
@@ -417,7 +403,7 @@ class DefaultClusterNode private[akka] (
     isShutdownFlag.set(true)
 
     def shutdownNode() {
-      ignore[ZkNoNodeException](zkClient.deleteRecursive(membershipNodePath))
+      ignore[MissingDataException](coordination.deleteRecursive(membershipNodePath))
 
       locallyCachedMembershipNodes.clear()
 
@@ -445,13 +431,13 @@ class DefaultClusterNode private[akka] (
   }
 
   def disconnect(): ClusterNode = {
-    zkClient.unsubscribeAll()
-    zkClient.close()
+    coordination.stopListenAll()
+    coordination.close()
     this
   }
 
   def reconnect(): ClusterNode = {
-    zkClient.reconnect()
+    coordination.reconnect()
     this
   }
 
@@ -656,16 +642,14 @@ class DefaultClusterNode private[akka] (
 
     // create ADDRESS -> Array[Byte] for actor registry
     try {
-      zkClient.writeData(actorAddressRegistryPath, actorFactoryBytes)
+      coordination.writeData(actorAddressRegistryPath, actorFactoryBytes)
     } catch {
-      case e: ZkNoNodeException ⇒ // if not stored yet, store the actor
-        zkClient.retryUntilConnected(new Callable[Either[String, Exception]]() {
-          def call: Either[String, Exception] = {
-            try {
-              Left(zkClient.connection.create(actorAddressRegistryPath, actorFactoryBytes, CreateMode.PERSISTENT))
-            } catch {
-              case e: KeeperException.NodeExistsException ⇒ Right(e)
-            }
+      case e: MissingDataException ⇒ // if not stored yet, store the actor
+        coordination.retryUntilConnected({
+          try {
+            Left(coordination.write(actorAddressRegistryPath, actorFactoryBytes))
+          } catch {
+            case e: DataExistsException ⇒ Right(e)
           }
         }) match {
           case Left(path)       ⇒ path
@@ -674,17 +658,14 @@ class DefaultClusterNode private[akka] (
     }
 
     // create ADDRESS -> SERIALIZER CLASS NAME mapping
-    try {
-      zkClient.createPersistent(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
-    } catch {
-      case e: ZkNodeExistsException ⇒ zkClient.writeData(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
-    }
+
+    coordination.overwrite(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
 
     // create ADDRESS -> NODE mapping
-    ignore[ZkNodeExistsException](zkClient.createPersistent(actorAddressToNodesPathFor(actorAddress)))
+    ignore[DataExistsException](coordination.writeData(actorAddressToNodesPathFor(actorAddress), Array.empty[Byte]))
 
     // create ADDRESS -> UUIDs mapping
-    ignore[ZkNodeExistsException](zkClient.createPersistent(actorAddressToUuidsPathFor(actorAddress)))
+    ignore[DataExistsException](coordination.writeData(actorAddressToUuidsPathFor(actorAddress), Array.empty[Byte]))
 
     useActorOnNodes(nodesForReplicationFactor(replicationFactor, Some(actorAddress)).toArray, actorAddress)
 
@@ -713,7 +694,7 @@ class DefaultClusterNode private[akka] (
   /**
    * Is the actor with uuid clustered or not?
    */
-  def isClustered(actorAddress: String): Boolean = zkClient.exists(actorAddressRegistryPathFor(actorAddress))
+  def isClustered(actorAddress: String): Boolean = coordination.exists(actorAddressRegistryPathFor(actorAddress))
 
   /**
    * Is the actor with uuid in use on 'this' node or not?
@@ -723,12 +704,12 @@ class DefaultClusterNode private[akka] (
   /**
    * Is the actor with uuid in use or not?
    */
-  def isInUseOnNode(actorAddress: String, node: NodeAddress): Boolean = zkClient.exists(actorAddressToNodesPathFor(actorAddress, node.nodeName))
+  def isInUseOnNode(actorAddress: String, node: NodeAddress): Boolean = coordination.exists(actorAddressToNodesPathFor(actorAddress, node.nodeName))
 
   /**
    * Is the actor with uuid in use or not?
    */
-  def isInUseOnNode(actorAddress: String, nodeName: String): Boolean = zkClient.exists(actorAddressToNodesPathFor(actorAddress, nodeName))
+  def isInUseOnNode(actorAddress: String, nodeName: String): Boolean = coordination.exists(actorAddressToNodesPathFor(actorAddress, nodeName))
 
   /**
    * Checks out an actor for use on this node, e.g. checked out as a 'LocalActorRef' but it makes it available
@@ -744,24 +725,22 @@ class DefaultClusterNode private[akka] (
     val nodeName = nodeAddress.nodeName
 
     val actorFactoryPath = actorAddressRegistryPathFor(actorAddress)
-    zkClient.retryUntilConnected(new Callable[Either[Exception, () ⇒ LocalActorRef]]() {
-      def call: Either[Exception, () ⇒ LocalActorRef] = {
-        try {
+    coordination.retryUntilConnected({
+      try {
 
-          val actorFactoryBytes =
-            if (shouldCompressData) LZF.uncompress(zkClient.connection.readData(actorFactoryPath, new Stat, false))
-            else zkClient.connection.readData(actorFactoryPath, new Stat, false)
+        val actorFactoryBytes =
+          if (shouldCompressData) LZF.uncompress(coordination.readData(actorFactoryPath).data)
+          else coordination.readData(actorFactoryPath).data
 
-          val actorFactory =
-            Serialization.deserialize(actorFactoryBytes, classOf[() ⇒ LocalActorRef], None) match {
-              case Left(error)     ⇒ throw error
-              case Right(instance) ⇒ instance.asInstanceOf[() ⇒ LocalActorRef]
-            }
+        val actorFactory =
+          Serialization.deserialize(actorFactoryBytes, classOf[() ⇒ LocalActorRef], None) match {
+            case Left(error)     ⇒ throw error
+            case Right(instance) ⇒ instance.asInstanceOf[() ⇒ LocalActorRef]
+          }
 
-          Right(actorFactory)
-        } catch {
-          case e: KeeperException.NoNodeException ⇒ Left(e)
-        }
+        Right(actorFactory)
+      } catch {
+        case e: MissingDataException ⇒ Left(e)
       }
     }) match {
       case Left(exception) ⇒ throw exception
@@ -775,44 +754,31 @@ class DefaultClusterNode private[akka] (
         val uuid = actorRef.uuid
 
         // create UUID registry
-        ignore[ZkNodeExistsException](zkClient.createPersistent(actorUuidRegistryPathFor(uuid)))
+        ignore[DataExistsException](coordination.writeData(actorUuidRegistryPathFor(uuid), Array.empty[Byte]))
 
         // create UUID -> NODE mapping
-        try {
-          zkClient.createPersistent(actorUuidRegistryNodePathFor(uuid), nodeName)
-        } catch {
-          case e: ZkNodeExistsException ⇒ zkClient.writeData(actorUuidRegistryNodePathFor(uuid), nodeName)
-        }
+
+        coordination.overwrite(actorUuidRegistryNodePathFor(uuid), nodeName)
 
         // create UUID -> ADDRESS
-        try {
-          zkClient.createPersistent(actorUuidRegistryAddressPathFor(uuid), actorAddress)
-        } catch {
-          case e: ZkNodeExistsException ⇒ zkClient.writeData(actorUuidRegistryAddressPathFor(uuid), actorAddress)
-        }
+
+        coordination.overwrite(actorUuidRegistryAddressPathFor(uuid), actorAddress)
 
         // create UUID -> REMOTE ADDRESS (InetSocketAddress) mapping
-        try {
-          zkClient.createPersistent(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
-        } catch {
-          case e: ZkNodeExistsException ⇒ zkClient.writeData(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
-        }
+        coordination.overwrite(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
 
         // create ADDRESS -> UUID mapping
-        try {
-          zkClient.createPersistent(actorAddressRegistryUuidPathFor(actorAddress), uuid)
-        } catch {
-          case e: ZkNodeExistsException ⇒ zkClient.writeData(actorAddressRegistryUuidPathFor(actorAddress), uuid)
-        }
+
+        coordination.overwrite(actorAddressRegistryUuidPathFor(actorAddress), uuid)
 
         // create NODE -> UUID mapping
-        ignore[ZkNodeExistsException](zkClient.createPersistent(nodeToUuidsPathFor(nodeName, uuid), true))
+        ignore[DataExistsException](coordination.write(nodeToUuidsPathFor(nodeName, uuid), true))
 
         // create ADDRESS -> UUIDs mapping
-        ignore[ZkNodeExistsException](zkClient.createPersistent(actorAddressToUuidsPathFor(actorAddress, uuid)))
+        ignore[DataExistsException](coordination.writeData(actorAddressToUuidsPathFor(actorAddress, uuid), Array.empty[Byte]))
 
         // create ADDRESS -> NODE mapping
-        ignore[ZkNodeExistsException](zkClient.createPersistent(actorAddressToNodesPathFor(actorAddress, nodeName)))
+        ignore[DataExistsException](coordination.write(actorAddressToNodesPathFor(actorAddress, nodeName), Array.empty[Byte]))
 
         actorRef
     }
@@ -871,14 +837,14 @@ class DefaultClusterNode private[akka] (
     // FIXME 'Cluster.release' needs to notify all existing ClusterActorRef's that are using the instance that it is no
     // longer available. Then what to do? Should we even remove this method?
 
-    ignore[ZkNoNodeException](zkClient.delete(actorAddressToNodesPathFor(actorAddress, nodeAddress.nodeName)))
+    ignore[MissingDataException](coordination.delete(actorAddressToNodesPathFor(actorAddress, nodeAddress.nodeName)))
 
     uuidsForActorAddress(actorAddress) foreach { uuid ⇒
       EventHandler.debug(this,
         "Releasing actor [%s] with UUID [%s] after usage".format(actorAddress, uuid))
 
-      ignore[ZkNoNodeException](zkClient.deleteRecursive(nodeToUuidsPathFor(nodeAddress.nodeName, uuid)))
-      ignore[ZkNoNodeException](zkClient.delete(actorUuidRegistryRemoteAddressPathFor(uuid)))
+      ignore[MissingDataException](coordination.deleteRecursive(nodeToUuidsPathFor(nodeAddress.nodeName, uuid)))
+      ignore[MissingDataException](coordination.delete(actorUuidRegistryRemoteAddressPathFor(uuid)))
     }
   }
 
@@ -921,7 +887,7 @@ class DefaultClusterNode private[akka] (
    * Returns the UUIDs of all actors registered in this cluster.
    */
   private[akka] def uuidsForClusteredActors: Array[UUID] =
-    zkClient.getChildren(ACTOR_UUID_REGISTRY_PATH).toList.map(new UUID(_)).toArray.asInstanceOf[Array[UUID]]
+    coordination.getChildren(ACTOR_UUID_REGISTRY_PATH).toList.map(new UUID(_)).toArray.asInstanceOf[Array[UUID]]
 
   /**
    * Returns the addresses of all actors registered in this cluster.
@@ -933,9 +899,9 @@ class DefaultClusterNode private[akka] (
    */
   private[akka] def actorAddressForUuid(uuid: UUID): Option[String] = {
     try {
-      Some(zkClient.readData(actorUuidRegistryAddressPathFor(uuid)).asInstanceOf[String])
+      Some(coordination.read(actorUuidRegistryAddressPathFor(uuid)).asInstanceOf[String])
     } catch {
-      case e: ZkNoNodeException ⇒ None
+      case e: MissingDataException ⇒ None
     }
   }
 
@@ -950,11 +916,11 @@ class DefaultClusterNode private[akka] (
    */
   private[akka] def uuidsForActorAddress(actorAddress: String): Array[UUID] = {
     try {
-      zkClient.getChildren(actorAddressToUuidsPathFor(actorAddress)).toList.toArray map {
+      coordination.getChildren(actorAddressToUuidsPathFor(actorAddress)).toList.toArray map {
         case c: CharSequence ⇒ new UUID(c)
       } filter (_ ne null)
     } catch {
-      case e: ZkNoNodeException ⇒ Array[UUID]()
+      case e: MissingDataException ⇒ Array[UUID]()
     }
   }
 
@@ -963,9 +929,9 @@ class DefaultClusterNode private[akka] (
    */
   private[akka] def nodesForActorsInUseWithAddress(actorAddress: String): Array[String] = {
     try {
-      zkClient.getChildren(actorAddressToNodesPathFor(actorAddress)).toList.toArray.asInstanceOf[Array[String]]
+      coordination.getChildren(actorAddressToNodesPathFor(actorAddress)).toList.toArray.asInstanceOf[Array[String]]
     } catch {
-      case e: ZkNoNodeException ⇒ Array[String]()
+      case e: MissingDataException ⇒ Array[String]()
     }
   }
 
@@ -974,11 +940,11 @@ class DefaultClusterNode private[akka] (
    */
   private[akka] def uuidsForActorsInUseOnNode(nodeName: String): Array[UUID] = {
     try {
-      zkClient.getChildren(nodeToUuidsPathFor(nodeName)).toList.toArray map {
+      coordination.getChildren(nodeToUuidsPathFor(nodeName)).toList.toArray map {
         case c: CharSequence ⇒ new UUID(c)
       } filter (_ ne null)
     } catch {
-      case e: ZkNoNodeException ⇒ Array[UUID]()
+      case e: MissingDataException ⇒ Array[UUID]()
     }
   }
 
@@ -988,11 +954,11 @@ class DefaultClusterNode private[akka] (
   def addressesForActorsInUseOnNode(nodeName: String): Array[String] = {
     val uuids =
       try {
-        zkClient.getChildren(nodeToUuidsPathFor(nodeName)).toList.toArray map {
+        coordination.getChildren(nodeToUuidsPathFor(nodeName)).toList.toArray map {
           case c: CharSequence ⇒ new UUID(c)
         } filter (_ ne null)
       } catch {
-        case e: ZkNoNodeException ⇒ Array[UUID]()
+        case e: MissingDataException ⇒ Array[UUID]()
       }
     actorAddressForUuids(uuids)
   }
@@ -1001,9 +967,9 @@ class DefaultClusterNode private[akka] (
    * Returns Serializer for actor with specific address.
    */
   def serializerForActor(actorAddress: String): Serializer = try {
-    Serialization.serializerByIdentity(zkClient.readData(actorAddressRegistrySerializerPathFor(actorAddress), new Stat).asInstanceOf[String].toByte)
+    Serialization.serializerByIdentity(coordination.read(actorAddressRegistrySerializerPathFor(actorAddress)).asInstanceOf[String].toByte)
   } catch {
-    case e: ZkNoNodeException ⇒ throw new IllegalStateException("No serializer found for actor with address [%s]".format(actorAddress))
+    case e: MissingDataException ⇒ throw new IllegalStateException("No serializer found for actor with address [%s]".format(actorAddress))
   }
 
   /**
@@ -1014,11 +980,11 @@ class DefaultClusterNode private[akka] (
       for {
         uuid ← uuidsForActorAddress(actorAddress)
       } yield {
-        val remoteAddress = zkClient.readData(actorUuidRegistryRemoteAddressPathFor(uuid)).asInstanceOf[InetSocketAddress]
+        val remoteAddress = coordination.read(actorUuidRegistryRemoteAddressPathFor(uuid)).asInstanceOf[InetSocketAddress]
         (uuid, remoteAddress)
       }
     } catch {
-      case e: ZkNoNodeException ⇒
+      case e: MissingDataException ⇒
         EventHandler.warning(this,
           "Could not retrieve remote socket address for node hosting actor [%s] due to: %s"
             .format(actorAddress, e.toString))
@@ -1108,22 +1074,20 @@ class DefaultClusterNode private[akka] (
     val compressedBytes = if (shouldCompressData) LZF.compress(bytes) else bytes
     EventHandler.debug(this,
       "Adding config value [%s] under key [%s] in cluster registry".format(key, compressedBytes))
-    zkClient.retryUntilConnected(new Callable[Either[Unit, Exception]]() {
-      def call: Either[Unit, Exception] = {
-        try {
-          Left(zkClient.connection.create(configurationPathFor(key), compressedBytes, CreateMode.PERSISTENT))
-        } catch {
-          case e: KeeperException.NodeExistsException ⇒
-            try {
-              Left(zkClient.connection.writeData(configurationPathFor(key), compressedBytes))
-            } catch {
-              case e: Exception ⇒ Right(e)
-            }
-        }
+    coordination.retryUntilConnected({
+      try {
+        Left(coordination.writeData(configurationPathFor(key), compressedBytes))
+      } catch {
+        case e: DataExistsException ⇒
+          try {
+            Left(coordination.overwriteData(configurationPathFor(key), compressedBytes))
+          } catch {
+            case e: Exception ⇒ Right(e)
+          }
       }
     }) match {
-      case Left(_)          ⇒ /* do nothing */
-      case Right(exception) ⇒ throw exception
+      case Left(_)                     ⇒ /* do nothing */
+      case Right(exception: Exception) ⇒ throw exception
     }
   }
 
@@ -1132,9 +1096,9 @@ class DefaultClusterNode private[akka] (
    * Returns <code>Some(element)</code> if it exists else <code>None</code>
    */
   def getConfigElement(key: String): Option[Array[Byte]] = try {
-    Some(zkClient.connection.readData(configurationPathFor(key), new Stat, true))
+    Some(coordination.readData(configurationPathFor(key)).data)
   } catch {
-    case e: KeeperException.NoNodeException ⇒ None
+    case e: MissingDataException ⇒ None
   }
 
   /**
@@ -1142,17 +1106,17 @@ class DefaultClusterNode private[akka] (
    * Does nothing if the key does not exist.
    */
   def removeConfigElement(key: String) {
-    ignore[ZkNoNodeException] {
+    ignore[MissingDataException] {
       EventHandler.debug(this,
         "Removing config element with key [%s] from cluster registry".format(key))
-      zkClient.deleteRecursive(configurationPathFor(key))
+      coordination.deleteRecursive(configurationPathFor(key))
     }
   }
 
   /**
    * Returns a list with all config element keys.
    */
-  def getConfigElementKeys: Array[String] = zkClient.getChildren(CONFIGURATION_PATH).toList.toArray.asInstanceOf[Array[String]]
+  def getConfigElementKeys: Array[String] = coordination.getChildren(CONFIGURATION_PATH).toList.toArray.asInstanceOf[Array[String]]
 
   // =======================================
   // Private
@@ -1346,16 +1310,16 @@ class DefaultClusterNode private[akka] (
     try {
       EventHandler.info(this,
         "Joining cluster as membership node [%s] on [%s]".format(nodeAddress, membershipNodePath))
-      zkClient.createEphemeral(membershipNodePath, remoteServerAddress)
+      coordination.writeEphemeral(membershipNodePath, remoteServerAddress)
     } catch {
-      case e: ZkNodeExistsException ⇒
+      case e: DataExistsException ⇒
         e.printStackTrace
         val error = new ClusterException(
           "Can't join the cluster. The node name [" + nodeAddress.nodeName + "] is already in use by another node.")
         EventHandler.error(error, this, error.toString)
         throw error
     }
-    ignore[ZkNodeExistsException](zkClient.createPersistent(nodeToUuidsPathFor(nodeAddress.nodeName)))
+    ignore[DataExistsException](coordination.writeData(nodeToUuidsPathFor(nodeAddress.nodeName), Array.empty[Byte]))
   }
 
   private[cluster] def joinLeaderElection(): Boolean = {
@@ -1363,15 +1327,15 @@ class DefaultClusterNode private[akka] (
     try {
       leaderLock.lock
     } catch {
-      case e: KeeperException.NodeExistsException ⇒ false
+      case e: DataExistsException ⇒ false
     }
   }
 
   private[cluster] def remoteSocketAddressForNode(node: String): Option[InetSocketAddress] = {
     try {
-      Some(zkClient.readData(membershipPathFor(node), new Stat).asInstanceOf[InetSocketAddress])
+      Some(coordination.read(membershipPathFor(node)).asInstanceOf[InetSocketAddress])
     } catch {
-      case e: ZkNoNodeException ⇒ None
+      case e: MissingDataException ⇒ None
     }
   }
 
@@ -1402,7 +1366,7 @@ class DefaultClusterNode private[akka] (
         // All to this node except if the actor already resides here, then pick another node it is not already on.
 
         // Yes I am the node to migrate the actor to (can only be one in the cluster)
-        val actorUuidsForFailedNode = zkClient.getChildren(nodeToUuidsPathFor(failedNodeName)).toList
+        val actorUuidsForFailedNode = coordination.getChildren(nodeToUuidsPathFor(failedNodeName)).toList
 
         actorUuidsForFailedNode.foreach { uuidAsString ⇒
           EventHandler.debug(this,
@@ -1475,7 +1439,7 @@ class DefaultClusterNode private[akka] (
 
       val remoteAddress = remoteSocketAddressForNode(to.nodeName).getOrElse(throw new ClusterException("No remote address registered for [" + to.nodeName + "]"))
 
-      ignore[ZkNoNodeException](zkClient.delete(actorAddressToNodesPathFor(actorAddress, from.nodeName)))
+      ignore[MissingDataException](coordination.delete(actorAddressToNodesPathFor(actorAddress, from.nodeName)))
 
       // FIXME who takes care of this line?
       //ignore[ZkNoNodeException](zkClient.delete(nodeToUuidsPathFor(from.nodeName, uuid)))
@@ -1486,14 +1450,14 @@ class DefaultClusterNode private[akka] (
   }
 
   private def createZooKeeperPathStructureIfNeeded() {
-    ignore[ZkNodeExistsException] {
-      zkClient.create(CLUSTER_PATH, null, CreateMode.PERSISTENT)
+    ignore[DataExistsException] {
+      coordination.writeData(CLUSTER_PATH, Array.empty[Byte])
       EventHandler.info(this, "Created node [%s]".format(CLUSTER_PATH))
     }
 
     basePaths.foreach { path ⇒
       try {
-        ignore[ZkNodeExistsException](zkClient.create(path, null, CreateMode.PERSISTENT))
+        ignore[DataExistsException](coordination.write(path, Array.empty[Byte]))
         EventHandler.debug(this, "Created node [%s]".format(path))
       } catch {
         case e ⇒
@@ -1505,17 +1469,17 @@ class DefaultClusterNode private[akka] (
   }
 
   private def registerListeners() = {
-    zkClient.subscribeStateChanges(stateListener)
-    zkClient.subscribeChildChanges(MEMBERSHIP_PATH, membershipListener)
+    coordination.listenToConnection(stateListener)
+    coordination.listenTo(MEMBERSHIP_PATH, membershipListener)
   }
 
   private def unregisterListeners() = {
-    zkClient.unsubscribeStateChanges(stateListener)
-    zkClient.unsubscribeChildChanges(MEMBERSHIP_PATH, membershipListener)
+    coordination.stopListenToConnection(stateListener)
+    coordination.stopListenTo(MEMBERSHIP_PATH, membershipListener)
   }
 
   private def fetchMembershipNodes() {
-    val membershipChildren = zkClient.getChildren(MEMBERSHIP_PATH)
+    val membershipChildren = coordination.getChildren(MEMBERSHIP_PATH)
     locallyCachedMembershipNodes.clear()
     membershipChildren.iterator.foreach(locallyCachedMembershipNodes.add)
     connectToAllNewlyArrivedMembershipNodesInCluster(membershipNodes, Nil)
@@ -1544,7 +1508,7 @@ class DefaultClusterNode private[akka] (
 
       override def getClusterName = self.nodeAddress.clusterName
 
-      override def getZooKeeperServerAddresses = self.zkServerAddresses
+      override def getCoordinationServerAddresses = self.coordinationServerAddresses
 
       override def getMemberNodes = self.locallyCachedMembershipNodes.iterator.map(_.toString).toArray
 
@@ -1611,8 +1575,8 @@ class DefaultClusterNode private[akka] (
 /**
  * @author <a href="http://jonasboner.com">Jonas Bon&#233;r</a>
  */
-class MembershipChildListener(self: ClusterNode) extends IZkChildListener with ErrorHandler {
-  def handleChildChange(parentPath: String, currentChilds: JList[String]) {
+class MembershipChildListener(self: ClusterNode) extends CoordinationNodeListener with ErrorHandler {
+  def handleChange(parentPath: String, currentChilds: List[String]) {
     withErrorHandler {
       if (!self.isShutdown) {
         if (currentChilds ne null) {
@@ -1653,16 +1617,16 @@ class MembershipChildListener(self: ClusterNode) extends IZkChildListener with E
 /**
  * @author <a href="http://jonasboner.com">Jonas Bon&#233;r</a>
  */
-class StateListener(self: ClusterNode) extends IZkStateListener {
-  def handleStateChanged(state: KeeperState) {
+class StateListener(self: ClusterNode) extends CoordinationConnectionListener {
+  def handleEvent(state: ChangeNotification) {
     state match {
-      case KeeperState.SyncConnected ⇒
+      case ThisNode.Connected ⇒
         EventHandler.debug(this, "Cluster node [%s] - Connected".format(self.nodeAddress))
         self.publish(ThisNode.Connected)
-      case KeeperState.Disconnected ⇒
+      case ThisNode.Disconnected ⇒
         EventHandler.debug(this, "Cluster node [%s] - Disconnected".format(self.nodeAddress))
         self.publish(ThisNode.Disconnected)
-      case KeeperState.Expired ⇒
+      case ThisNode.Expired ⇒
         EventHandler.debug(this, "Cluster node [%s] - Expired".format(self.nodeAddress))
         self.publish(ThisNode.Expired)
     }
@@ -1684,7 +1648,8 @@ class StateListener(self: ClusterNode) extends IZkStateListener {
 trait ErrorHandler {
   def withErrorHandler[T](body: ⇒ T) = {
     try {
-      ignore[ZkInterruptedException](body) // FIXME Is it good to ignore ZkInterruptedException? If not, how should we handle it?
+      //ignore[ZkInterruptedException](body) // FIXME Is it good to ignore ZkInterruptedException? If not, how should we handle it?
+      body
     } catch {
       case e: Throwable ⇒
         EventHandler.error(e, this, e.toString)
@@ -1854,10 +1819,10 @@ class RemoteClusterDaemon(cluster: ClusterNode) extends Actor {
         EventHandler.error(this, "Actor 'address' is not defined, ignoring remote cluster daemon command [%s]".format(message))
       }
 
-      self.reply(Success(cluster.remoteServerAddress.toString))
+      channel ! (Success(cluster.remoteServerAddress.toString))
     } catch {
       case error: Throwable ⇒
-        self.reply(Failure(error))
+        channel ! (Failure(error))
         throw error
     }
   }
@@ -1866,7 +1831,11 @@ class RemoteClusterDaemon(cluster: ClusterNode) extends Actor {
     new LocalActorRef(
       Props(
         self ⇒ {
-          case f: Function0[_] ⇒ try { f() } finally { self.stop() }
+          case f: Function0[_] ⇒ try {
+            f()
+          } finally {
+            self.stop()
+          }
         }).copy(dispatcher = computeGridDispatcher), newUuid.toString, systemService = true) ! payloadFor(message, classOf[Function0[Unit]])
   }
 
@@ -1874,7 +1843,11 @@ class RemoteClusterDaemon(cluster: ClusterNode) extends Actor {
     new LocalActorRef(
       Props(
         self ⇒ {
-          case f: Function0[_] ⇒ try { self.reply(f()) } finally { self.stop() }
+          case f: Function0[_] ⇒ try {
+            channel ! (f())
+          } finally {
+            self.stop()
+          }
         }).copy(dispatcher = computeGridDispatcher), newUuid.toString, systemService = true) forward payloadFor(message, classOf[Function0[Any]])
   }
 
@@ -1882,7 +1855,11 @@ class RemoteClusterDaemon(cluster: ClusterNode) extends Actor {
     new LocalActorRef(
       Props(
         self ⇒ {
-          case (fun: Function[_, _], param: Any) ⇒ try { fun.asInstanceOf[Any ⇒ Unit].apply(param) } finally { self.stop() }
+          case (fun: Function[_, _], param: Any) ⇒ try {
+            fun.asInstanceOf[Any ⇒ Unit].apply(param)
+          } finally {
+            self.stop()
+          }
         }).copy(dispatcher = computeGridDispatcher), newUuid.toString, systemService = true) ! payloadFor(message, classOf[Tuple2[Function1[Any, Unit], Any]])
   }
 
@@ -1890,7 +1867,11 @@ class RemoteClusterDaemon(cluster: ClusterNode) extends Actor {
     new LocalActorRef(
       Props(
         self ⇒ {
-          case (fun: Function[_, _], param: Any) ⇒ try { self.reply(fun.asInstanceOf[Any ⇒ Any](param)) } finally { self.stop() }
+          case (fun: Function[_, _], param: Any) ⇒ try {
+            channel ! (fun.asInstanceOf[Any ⇒ Any](param))
+          } finally {
+            self.stop()
+          }
         }).copy(dispatcher = computeGridDispatcher), newUuid.toString, systemService = true) forward payloadFor(message, classOf[Tuple2[Function1[Any, Any], Any]])
   }
 

@@ -10,11 +10,11 @@ import org.I0Itec.zkclient.exception._
 /**
  * ZooKeeper client. Holds the ZooKeeper connection and manages its session.
  */
-class AkkaZkClient(zkServers: String,
+class AkkaZkClient(val serverAddresses: String,
                    sessionTimeout: Int,
                    connectionTimeout: Int,
-                   zkSerializer: ZkSerializer = new SerializableSerializer)
-  extends ZkClient(zkServers, sessionTimeout, connectionTimeout, zkSerializer) {
+                   val zkSerializer: ZkSerializer = new SerializableSerializer)
+  extends ZkClient(serverAddresses, sessionTimeout, connectionTimeout, zkSerializer) {
 
   def connection: ZkConnection = _connection.asInstanceOf[ZkConnection]
 

@@ -8,23 +8,16 @@ import akka.actor._
 import akka.util._
 import ReflectiveAccess._
 import akka.routing._
-import akka.cluster._
-import FailureDetector._
 import akka.event.EventHandler
-import akka.config.ConfigurationException
-
 import java.net.InetSocketAddress
-import java.util.concurrent.atomic.AtomicReference
-
 import collection.immutable.Map
-import annotation.tailrec
-
 /**
  * ClusterActorRef factory and locator.
  *
  * @author <a href="http://jonasboner.com">Jonas Bon&#233;r</a>
  */
 object ClusterActorRef {
+
   import FailureDetectorType._
   import RouterType._
 
@@ -112,22 +105,23 @@ private[akka] class ClusterActorRef(props: RoutedProps, val address: String) ext
     connections.failOver(from, to)
   }
 
+  @volatile
+  private var running: Boolean = false
+
+  def isRunning: Boolean = running
+
+  def isShutdown: Boolean = !running
+
   def stop() {
     synchronized {
-      if (_status == ActorRefInternals.RUNNING) {
-        Actor.registry.local.unregisterClusterActorRef(this)
-        _status = ActorRefInternals.SHUTDOWN
-        postMessageToMailbox(RemoteActorSystemMessage.Stop, None)
-
-        // FIXME here we need to fire off Actor.cluster.remove(address) (which needs to be properly implemented first, see ticket)
-        connections.stopAll()
+      if (running) {
+        running = false
       }
     }
   }
 
-  /* If you start me up */
-  if (_status == ActorRefInternals.UNSTARTED) {
-    _status = ActorRefInternals.RUNNING
+  if (isShutdown) {
+    running = true
     Actor.registry.local.registerClusterActorRef(this)
   }
 }

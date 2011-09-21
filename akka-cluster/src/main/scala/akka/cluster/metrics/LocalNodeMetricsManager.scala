@@ -9,6 +9,7 @@ import Cluster._
 import akka.cluster.zookeeper._
 import akka.actor._
 import Actor._
+import coordination.CoordinationClient
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 import java.util.concurrent.{ ConcurrentHashMap, ConcurrentSkipListSet }
@@ -18,6 +19,7 @@ import akka.util.Helpers._
 import akka.util.duration._
 import org.I0Itec.zkclient.exception.ZkNoNodeException
 import akka.event.EventHandler
+import storage.MissingDataException
 
 /*
  * Instance of the metrics manager running on the node. To keep the fine performance, metrics of all the
@@ -31,7 +33,7 @@ import akka.event.EventHandler
  *      akka.cluster.metrics-refresh-timeout = 2
  * }}}
  */
-class LocalNodeMetricsManager(zkClient: AkkaZkClient, private val metricsRefreshTimeout: Duration)
+class LocalNodeMetricsManager(coordination: CoordinationClient, private val metricsRefreshTimeout: Duration)
   extends NodeMetricsManager {
 
   /*
@@ -97,10 +99,10 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
      */
   private[akka] def storeMetricsInZK(metrics: NodeMetrics) = {
     val metricsPath = metricsForNode(metrics.nodeName)
-    if (zkClient.exists(metricsPath)) {
-      zkClient.writeData(metricsPath, metrics)
+    if (coordination.exists(metricsPath)) {
+      coordination.write(metricsPath, metrics)
     } else {
-      ignore[ZkNoNodeException](zkClient.createEphemeral(metricsPath, metrics))
+      ignore[MissingDataException](coordination.writeEphemeral(metricsPath, metrics))
     }
   }
 
@@ -108,7 +110,7 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
      * Gets metrics of the node from ZooKeeper
      */
   private[akka] def getMetricsFromZK(nodeName: String) = {
-    zkClient.readData[NodeMetrics](metricsForNode(nodeName))
+    coordination.read[NodeMetrics](metricsForNode(nodeName))
   }
 
   /*
@@ -116,8 +118,8 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
      */
   def removeNodeMetrics(nodeName: String) = {
     val metricsPath = metricsForNode(nodeName)
-    if (zkClient.exists(metricsPath)) {
-      ignore[ZkNoNodeException](zkClient.delete(metricsPath))
+    if (coordination.exists(metricsPath)) {
+      ignore[MissingDataException](coordination.delete(metricsPath))
     }
 
     localNodeMetricsCache.remove(nodeName)
@@ -146,7 +148,7 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
      * Return metrics of all nodes in the cluster from ZooKeeper
      */
   private[akka] def getAllMetricsFromZK: Map[String, NodeMetrics] = {
-    val metricsPaths = zkClient.getChildren(node.NODE_METRICS).toList.toArray.asInstanceOf[Array[String]]
+    val metricsPaths = coordination.getChildren(node.NODE_METRICS).toList.toArray.asInstanceOf[Array[String]]
     metricsPaths.flatMap { nodeName ⇒ getMetrics(nodeName, false).map((nodeName, _)) } toMap
   }
 
