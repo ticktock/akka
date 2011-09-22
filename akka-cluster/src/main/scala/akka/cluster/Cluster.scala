@@ -769,20 +769,20 @@ class DefaultClusterNode private[akka] (
         }
         // create UUID -> ADDRESS
         try {
-          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+          coordination.create(actorUuidRegistryAddressPathFor(uuid), actorAddress)
         } catch {
           case e: DataExistsException ⇒ coordination.forceUpdate(actorUuidRegistryAddressPathFor(uuid), actorAddress)
         }
 
         // create UUID -> REMOTE ADDRESS (InetSocketAddress) mapping
         try {
-          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+          coordination.create(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
         } catch {
           case e: DataExistsException ⇒ coordination.forceUpdate(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
         }
         // create ADDRESS -> UUID mapping
         try {
-          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+          coordination.create(actorAddressRegistryUuidPathFor(actorAddress), uuid)
         } catch {
           case e: DataExistsException ⇒ coordination.forceUpdate(actorAddressRegistryUuidPathFor(actorAddress), uuid)
         }

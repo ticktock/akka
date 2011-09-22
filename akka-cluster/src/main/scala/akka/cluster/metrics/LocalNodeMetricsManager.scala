@@ -110,7 +110,9 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
      * Gets metrics of the node from ZooKeeper
      */
   private[akka] def getMetricsFromZK(nodeName: String) = {
+
     coordination.read[NodeMetrics](metricsForNode(nodeName))
+
   }
 
   /*
@@ -141,7 +143,7 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
       try {
         Some(getMetricsFromZK(nodeName))
       } catch {
-        case ex: ZkNoNodeException ⇒ None
+        case ex: MissingDataException ⇒ None
       }
 
   /*

@@ -72,7 +72,7 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     List(asScalaBuffer(zkClient.getChildren(path)).toArray: _*)
   }
 
-  def forceUpdateData(path: String, value: Array[Byte]): VersionedData = handle {
+  def forceUpdateData(path: String, value: Array[Byte]): VersionedData = handleWith(writeDataFailed(path)) {
     val stat = new Stat()
     zkClient.connection.writeData(path, value, -1)
     new VersionedData(value, stat.getVersion.toLong)
@@ -150,7 +150,7 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     zkClient.connection.create(path, null, CreateMode.EPHEMERAL)
   }
 
-  def create(path: String, value: Any) = {
+  def create(path: String, value: Any) = handleWith(createFailed(path)) {
     zkClient.createPersistent(path, value)
   }
 
@@ -175,6 +175,8 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
   private def writeDataFailed(key: String): ToStorageException = {
     case e: KeeperException.BadVersionException ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
     case e: ZkBadVersionException               ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
+    case e: KeeperException.NoNodeException     ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
+    case e: ZkNoNodeException                   ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
     case e: KeeperException                     ⇒ CoordinationClient.writeDataFailed(key, e)
   }
 

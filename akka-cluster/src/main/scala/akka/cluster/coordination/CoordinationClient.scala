@@ -111,6 +111,8 @@ object CoordinationClient {
 
   def writeDataFailedBadVersion(key: String, underlying: Exception) = new BadVersionException(String.format("Failed to update key [%s]: version mismatch", key), underlying)
 
+  def writeDataFailedMissingData(key: String, underlying: Exception) = new MissingDataException(String.format("Failed to update key [%s]: no data was found", key), underlying)
+
   def deleteFailed(key: String, underlying: Exception) = new StorageException(String.format("Failed to delete key [%s]", key), underlying)
 
   def deleteRecursiveFailed(key: String, underlying: Exception) = new StorageException(String.format("Failed to recursively delete path [%s]", key), underlying)
