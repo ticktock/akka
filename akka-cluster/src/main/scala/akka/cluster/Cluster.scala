@@ -15,6 +15,7 @@ import scala.collection.JavaConversions._
 import scala.annotation.tailrec
 
 import akka.util._
+import akka.util.Index
 import Helpers._
 
 import akka.actor._
@@ -642,12 +643,12 @@ class DefaultClusterNode private[akka] (
 
     // create ADDRESS -> Array[Byte] for actor registry
     try {
-      coordination.writeData(actorAddressRegistryPath, actorFactoryBytes)
+      coordination.forceUpdateData(actorAddressRegistryPath, actorFactoryBytes)
     } catch {
       case e: MissingDataException ⇒ // if not stored yet, store the actor
         coordination.retryUntilConnected({
           try {
-            Left(coordination.write(actorAddressRegistryPath, actorFactoryBytes))
+            Left(coordination.createData(actorAddressRegistryPath, actorFactoryBytes))
           } catch {
             case e: DataExistsException ⇒ Right(e)
           }
@@ -658,14 +659,17 @@ class DefaultClusterNode private[akka] (
     }
 
     // create ADDRESS -> SERIALIZER CLASS NAME mapping
-
-    coordination.overwrite(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
+    try {
+      coordination.create(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
+    } catch {
+      case e: DataExistsException ⇒ coordination.forceUpdate(actorAddressRegistrySerializerPathFor(actorAddress), serializer.identifier.toString)
+    }
 
     // create ADDRESS -> NODE mapping
-    ignore[DataExistsException](coordination.writeData(actorAddressToNodesPathFor(actorAddress), Array.empty[Byte]))
+    ignore[DataExistsException](coordination.createPath(actorAddressToNodesPathFor(actorAddress)))
 
     // create ADDRESS -> UUIDs mapping
-    ignore[DataExistsException](coordination.writeData(actorAddressToUuidsPathFor(actorAddress), Array.empty[Byte]))
+    ignore[DataExistsException](coordination.createPath(actorAddressToUuidsPathFor(actorAddress)))
 
     useActorOnNodes(nodesForReplicationFactor(replicationFactor, Some(actorAddress)).toArray, actorAddress)
 
@@ -754,31 +758,43 @@ class DefaultClusterNode private[akka] (
         val uuid = actorRef.uuid
 
         // create UUID registry
-        ignore[DataExistsException](coordination.writeData(actorUuidRegistryPathFor(uuid), Array.empty[Byte]))
+        ignore[DataExistsException](coordination.createPath(actorUuidRegistryPathFor(uuid)))
 
         // create UUID -> NODE mapping
 
-        coordination.overwrite(actorUuidRegistryNodePathFor(uuid), nodeName)
-
+        try {
+          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+        } catch {
+          case e: DataExistsException ⇒ coordination.forceUpdate(actorUuidRegistryNodePathFor(uuid), nodeName)
+        }
         // create UUID -> ADDRESS
-
-        coordination.overwrite(actorUuidRegistryAddressPathFor(uuid), actorAddress)
+        try {
+          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+        } catch {
+          case e: DataExistsException ⇒ coordination.forceUpdate(actorUuidRegistryAddressPathFor(uuid), actorAddress)
+        }
 
         // create UUID -> REMOTE ADDRESS (InetSocketAddress) mapping
-        coordination.overwrite(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
-
+        try {
+          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+        } catch {
+          case e: DataExistsException ⇒ coordination.forceUpdate(actorUuidRegistryRemoteAddressPathFor(uuid), remoteServerAddress)
+        }
         // create ADDRESS -> UUID mapping
-
-        coordination.overwrite(actorAddressRegistryUuidPathFor(actorAddress), uuid)
+        try {
+          coordination.create(actorUuidRegistryNodePathFor(uuid), nodeName)
+        } catch {
+          case e: DataExistsException ⇒ coordination.forceUpdate(actorAddressRegistryUuidPathFor(actorAddress), uuid)
+        }
 
         // create NODE -> UUID mapping
-        ignore[DataExistsException](coordination.write(nodeToUuidsPathFor(nodeName, uuid), true))
+        ignore[DataExistsException](coordination.create(nodeToUuidsPathFor(nodeName, uuid), true))
 
         // create ADDRESS -> UUIDs mapping
-        ignore[DataExistsException](coordination.writeData(actorAddressToUuidsPathFor(actorAddress, uuid), Array.empty[Byte]))
+        ignore[DataExistsException](coordination.createPath(actorAddressToUuidsPathFor(actorAddress, uuid)))
 
         // create ADDRESS -> NODE mapping
-        ignore[DataExistsException](coordination.write(actorAddressToNodesPathFor(actorAddress, nodeName), Array.empty[Byte]))
+        ignore[DataExistsException](coordination.createPath(actorAddressToNodesPathFor(actorAddress, nodeName)))
 
         actorRef
     }
@@ -899,7 +915,7 @@ class DefaultClusterNode private[akka] (
    */
   private[akka] def actorAddressForUuid(uuid: UUID): Option[String] = {
     try {
-      Some(coordination.read(actorUuidRegistryAddressPathFor(uuid)).asInstanceOf[String])
+      Some(coordination.read[String](actorUuidRegistryAddressPathFor(uuid)))
     } catch {
       case e: MissingDataException ⇒ None
     }
@@ -967,7 +983,7 @@ class DefaultClusterNode private[akka] (
    * Returns Serializer for actor with specific address.
    */
   def serializerForActor(actorAddress: String): Serializer = try {
-    Serialization.serializerByIdentity(coordination.read(actorAddressRegistrySerializerPathFor(actorAddress)).asInstanceOf[String].toByte)
+    Serialization.serializerByIdentity(coordination.read[String](actorAddressRegistrySerializerPathFor(actorAddress)).toByte)
   } catch {
     case e: MissingDataException ⇒ throw new IllegalStateException("No serializer found for actor with address [%s]".format(actorAddress))
   }
@@ -980,7 +996,7 @@ class DefaultClusterNode private[akka] (
       for {
         uuid ← uuidsForActorAddress(actorAddress)
       } yield {
-        val remoteAddress = coordination.read(actorUuidRegistryRemoteAddressPathFor(uuid)).asInstanceOf[InetSocketAddress]
+        val remoteAddress = coordination.read[InetSocketAddress](actorUuidRegistryRemoteAddressPathFor(uuid))
         (uuid, remoteAddress)
       }
     } catch {
@@ -1076,11 +1092,11 @@ class DefaultClusterNode private[akka] (
       "Adding config value [%s] under key [%s] in cluster registry".format(key, compressedBytes))
     coordination.retryUntilConnected({
       try {
-        Left(coordination.writeData(configurationPathFor(key), compressedBytes))
+        Left(coordination.createData(configurationPathFor(key), compressedBytes))
       } catch {
         case e: DataExistsException ⇒
           try {
-            Left(coordination.overwriteData(configurationPathFor(key), compressedBytes))
+            Left(coordination.forceUpdateData(configurationPathFor(key), compressedBytes))
           } catch {
             case e: Exception ⇒ Right(e)
           }
@@ -1310,7 +1326,7 @@ class DefaultClusterNode private[akka] (
     try {
       EventHandler.info(this,
         "Joining cluster as membership node [%s] on [%s]".format(nodeAddress, membershipNodePath))
-      coordination.writeEphemeral(membershipNodePath, remoteServerAddress)
+      coordination.createEphemeral(membershipNodePath, remoteServerAddress)
     } catch {
       case e: DataExistsException ⇒
         e.printStackTrace
@@ -1319,7 +1335,7 @@ class DefaultClusterNode private[akka] (
         EventHandler.error(error, this, error.toString)
         throw error
     }
-    ignore[DataExistsException](coordination.writeData(nodeToUuidsPathFor(nodeAddress.nodeName), Array.empty[Byte]))
+    ignore[DataExistsException](coordination.createPath(nodeToUuidsPathFor(nodeAddress.nodeName)))
   }
 
   private[cluster] def joinLeaderElection(): Boolean = {
@@ -1333,7 +1349,7 @@ class DefaultClusterNode private[akka] (
 
   private[cluster] def remoteSocketAddressForNode(node: String): Option[InetSocketAddress] = {
     try {
-      Some(coordination.read(membershipPathFor(node)).asInstanceOf[InetSocketAddress])
+      Some(coordination.read[InetSocketAddress](membershipPathFor(node)))
     } catch {
       case e: MissingDataException ⇒ None
     }
@@ -1451,13 +1467,13 @@ class DefaultClusterNode private[akka] (
 
   private def createZooKeeperPathStructureIfNeeded() {
     ignore[DataExistsException] {
-      coordination.writeData(CLUSTER_PATH, Array.empty[Byte])
+      coordination.createPath(CLUSTER_PATH)
       EventHandler.info(this, "Created node [%s]".format(CLUSTER_PATH))
     }
 
     basePaths.foreach { path ⇒
       try {
-        ignore[DataExistsException](coordination.write(path, Array.empty[Byte]))
+        ignore[DataExistsException](coordination.createPath(path))
         EventHandler.debug(this, "Created node [%s]".format(path))
       } catch {
         case e ⇒

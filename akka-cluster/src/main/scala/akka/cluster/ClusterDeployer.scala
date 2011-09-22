@@ -71,7 +71,7 @@ object ClusterDeployer extends ActorDeployer {
       try {
         for {
           child ← coordination.getChildren(deploymentPath)
-          deployment ← coordination.read(deploymentAddressPath.format(child)).asInstanceOf[Deploy]
+          deployment ← coordination.read[Deploy](deploymentAddressPath.format(child))
         } coordination.delete(deploymentAddressPath.format(deployment.address))
 
         invalidateDeploymentInCluster()
@@ -93,7 +93,7 @@ object ClusterDeployer extends ActorDeployer {
       case None ⇒ // not in cache, check cluster
         val deployment =
           try {
-            Some(coordination.read(deploymentAddressPath.format(address)).asInstanceOf[Deploy])
+            Some(coordination.read[Deploy](deploymentAddressPath.format(address)))
           } catch {
             case e: ZkNoNodeException ⇒ None
             case e: Exception ⇒
@@ -113,7 +113,7 @@ object ClusterDeployer extends ActorDeployer {
         case e: ZkNoNodeException ⇒ List[String]()
       }
     val deployments = addresses map { address ⇒
-      coordination.read(deploymentAddressPath.format(address)).asInstanceOf[Deploy]
+      coordination.read[Deploy](deploymentAddressPath.format(address))
     }
     EventHandler.info(this, "Fetched deployment plan from cluster [\n\t%s\n]" format deployments.mkString("\n\t"))
     deployments
@@ -125,7 +125,7 @@ object ClusterDeployer extends ActorDeployer {
 
       basePaths foreach { path ⇒
         try {
-          ignore[DataExistsException](coordination.writeData(path, Array.empty[Byte]))
+          ignore[DataExistsException](coordination.createPath(path))
           EventHandler.debug(this, "Created ZooKeeper path for deployment [%s]".format(path))
         } catch {
           case e ⇒
@@ -166,8 +166,8 @@ object ClusterDeployer extends ActorDeployer {
           }*/
           val path = deploymentAddressPath.format(address)
           try {
-            ignore[DataExistsException](coordination.writeData(path, Array.empty[Byte]))
-            coordination.write(path, deployment)
+            ignore[DataExistsException](coordination.createPath(path))
+            coordination.forceUpdate(path, deployment)
           } catch {
             case e: NullPointerException ⇒
               handleError(new DeploymentException("Could not store deployment data [" + deployment + "] in ZooKeeper since client session is closed"))
@@ -179,7 +179,7 @@ object ClusterDeployer extends ActorDeployer {
   }
 
   private def markDeploymentCompletedInCluster() {
-    ignore[DataExistsException](coordination.writeData(isDeploymentCompletedInClusterLockPath, Array.empty[Byte]))
+    ignore[DataExistsException](coordination.createPath(isDeploymentCompletedInClusterLockPath))
   }
 
   private def isDeploymentCompletedInCluster = coordination.exists(isDeploymentCompletedInClusterLockPath)

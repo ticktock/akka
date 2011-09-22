@@ -10,35 +10,43 @@ trait CoordinationClient {
 
   def serverAddresses: String
 
-  def exists(path: String): Boolean
+  def createData(path: String, value: Array[Byte])
+
+  def createEphemeralData(path: String, value: Array[Byte])
+
+  def createEphemeralSequentialData(path: String, value: Array[Byte]): String
 
   def readData(path: String): VersionedData
 
   def readData(path: String, version: Long): VersionedData
 
-  def writeData(path: String, value: Array[Byte], expectedVersion: Long): VersionedData
+  def updateData(path: String, value: Array[Byte], expectedVersion: Long): VersionedData
 
-  def writeData(path: String, value: Array[Byte]): VersionedData
+  def forceUpdateData(path: String, value: Array[Byte]): VersionedData
 
-  def overwriteData(path: String, value: Array[Byte]): VersionedData
+  def exists(path: String): Boolean
+
+  def createPath(path: String)
+
+  def createEphemeralPath(path: String)
+
+  def delete(path: String): Boolean
+
+  def deleteRecursive(path: String): Boolean
+
+  def create(path: String, value: Any)
+
+  def createEphemeral(path: String, value: Any)
+
+  def createEphemeralSequential(path: String, value: Any): String
 
   def read[T](path: String): T
 
   def readWithVersion(path: String): (Any, Long)
 
-  def write(path: String, value: Any)
+  def update(path: String, value: Any, version: Long)
 
-  def write(path: String, value: Any, version: Long)
-
-  def writeEphemeral(path: String, value: Any)
-
-  def writeEphemeralSequential(path: String, value: Any): String
-
-  def overwrite(path: String, value: Any)
-
-  def delete(path: String): Boolean
-
-  def deleteRecursive(path: String): Boolean
+  def forceUpdate(path: String, value: Any)
 
   def getChildren(path: String): List[String]
 
@@ -60,7 +68,7 @@ trait CoordinationClient {
 
   def getLock(path: String, listener: CoordinationLockListener): CoordinationLock
 
-  def defaultStorageException: ToStorageException = {
+  val defaultStorageException: ToStorageException = {
     case underlying: Exception ⇒ new StorageException("Unexpected exception from the underlying storage impl", underlying)
   }
 
@@ -79,7 +87,8 @@ trait CoordinationClient {
     try {
       funk
     } catch {
-      case e: Exception ⇒ throw defaultStorageException(e)
+      case e: Exception ⇒
+        throw defaultStorageException(e)
     }
   }
 

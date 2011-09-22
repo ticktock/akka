@@ -100,9 +100,9 @@ In order to get better metrics, please put "sigar.jar" to the classpath, and add
   private[akka] def storeMetricsInZK(metrics: NodeMetrics) = {
     val metricsPath = metricsForNode(metrics.nodeName)
     if (coordination.exists(metricsPath)) {
-      coordination.write(metricsPath, metrics)
+      coordination.forceUpdate(metricsPath, metrics)
     } else {
-      ignore[MissingDataException](coordination.writeEphemeral(metricsPath, metrics))
+      ignore[MissingDataException](coordination.createEphemeral(metricsPath, metrics))
     }
   }
 

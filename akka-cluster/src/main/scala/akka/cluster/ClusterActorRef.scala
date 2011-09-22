@@ -5,6 +5,7 @@
 package akka.cluster
 
 import akka.actor._
+import akka.actor.Address
 import akka.util._
 import ReflectiveAccess._
 import akka.routing._

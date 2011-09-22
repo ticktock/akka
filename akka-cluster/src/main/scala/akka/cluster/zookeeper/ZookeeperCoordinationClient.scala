@@ -7,13 +7,14 @@ import org.apache.zookeeper.Watcher.Event
 import org.apache.zookeeper.data.Stat
 import org.apache.zookeeper.Watcher.Event.KeeperState
 import akka.cluster.ChangeListener._
-import org.apache.zookeeper.KeeperException
 import akka.cluster.storage.VersionedData
 import akka.cluster.coordination._
 import org.apache.zookeeper.recipes.lock.WriteLock
 import java.util.concurrent.{ Callable, ConcurrentHashMap }
 import akka.util.Duration
 import akka.config.Config._
+import org.apache.zookeeper.{ CreateMode, KeeperException }
+import org.I0Itec.zkclient.exception.{ ZkNoNodeException, ZkBadVersionException, ZkNodeExistsException }
 
 class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationClient {
 
@@ -71,23 +72,18 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     List(asScalaBuffer(zkClient.getChildren(path)).toArray: _*)
   }
 
-  def overwriteData(path: String, value: Array[Byte]): VersionedData = handle {
+  def forceUpdateData(path: String, value: Array[Byte]): VersionedData = handle {
     val stat = new Stat()
     zkClient.connection.writeData(path, value, -1)
     new VersionedData(value, stat.getVersion.toLong)
   }
 
-  def writeData(path: String, value: Array[Byte], expectedVersion: Long): VersionedData = handleWith(writeDataFailed(path)) {
+  def updateData(path: String, value: Array[Byte], expectedVersion: Long): VersionedData = handleWith(writeDataFailed(path)) {
     val stat = new Stat()
     zkClient.connection.writeData(path, value, expectedVersion.toInt)
     new VersionedData(value, stat.getVersion.toLong)
   }
 
-  def writeData(path: String, value: Array[Byte]): VersionedData = handleWith(writeDataFailed(path)) {
-    val stat = new Stat()
-    zkClient.connection.writeData(path, value)
-    new VersionedData(value, stat.getVersion.toLong)
-  }
   def readData(path: String): VersionedData = handleWith(readDataFailed(path)) {
     val stat = new Stat()
     val data = zkClient.connection.readData(path, stat, false)
@@ -124,21 +120,43 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     (zkClient.zkSerializer.deserialize(verData.data), verData.version)
   }
 
-  def write(path: String, value: Any, version: Long) = writeData(path, zkClient.zkSerializer.serialize(value), version)
+  def update(path: String, value: Any, version: Long) = updateData(path, zkClient.zkSerializer.serialize(value), version)
 
-  def writeEphemeral(path: String, value: Any) = handleWith(createFailed(path)) {
+  def createEphemeral(path: String, value: Any) = handleWith(createFailed(path)) {
     zkClient.createEphemeral(path, value)
   }
 
-  def writeEphemeralSequential(path: String, value: Any): String = handle {
+  def createEphemeralSequential(path: String, value: Any): String = handleWith(createFailed(path)) {
     zkClient.createEphemeralSequential(path, value)
+  }
+
+  def createData(path: String, value: Array[Byte]) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, value, CreateMode.PERSISTENT)
+  }
+
+  def createEphemeralData(path: String, value: Array[Byte]) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, value, CreateMode.EPHEMERAL)
+  }
+
+  def createEphemeralSequentialData(path: String, value: Array[Byte]) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, value, CreateMode.EPHEMERAL_SEQUENTIAL)
+  }
+
+  def createPath(path: String) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, null, CreateMode.PERSISTENT)
+  }
+
+  def createEphemeralPath(path: String) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, null, CreateMode.EPHEMERAL)
+  }
+
+  def create(path: String, value: Any) = {
+    zkClient.createPersistent(path, value)
   }
 
   def read[T](path: String): T = zkClient.zkSerializer.deserialize(readData(path).data).asInstanceOf[T]
 
-  def write(path: String, value: Any) = writeData(path, zkClient.zkSerializer.serialize(value))
-
-  def overwrite(path: String, value: Any) = overwriteData(path, zkClient.zkSerializer.serialize(value))
+  def forceUpdate(path: String, value: Any) = forceUpdateData(path, zkClient.zkSerializer.serialize(value))
 
   def stopListenAll() = {
     zkClient.unsubscribeAll()
@@ -156,11 +174,13 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
 
   private def writeDataFailed(key: String): ToStorageException = {
     case e: KeeperException.BadVersionException ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
+    case e: ZkBadVersionException               ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
     case e: KeeperException                     ⇒ CoordinationClient.writeDataFailed(key, e)
   }
 
   private def readDataFailed(key: String): ToStorageException = {
     case e: KeeperException.NoNodeException ⇒ CoordinationClient.readDataFailedMissingData(key, e)
+    case e: ZkNoNodeException               ⇒ CoordinationClient.readDataFailedMissingData(key, e)
     case e: KeeperException                 ⇒ CoordinationClient.readDataFailed(key, e)
   }
 
@@ -170,6 +190,7 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
 
   private def createFailed(key: String): ToStorageException = {
     case e: KeeperException.NodeExistsException ⇒ CoordinationClient.createFailedDataExists(key, e)
+    case e: ZkNodeExistsException               ⇒ CoordinationClient.createFailedDataExists(key, e)
     case e: KeeperException                     ⇒ CoordinationClient.createFailed(key, e)
   }
 
