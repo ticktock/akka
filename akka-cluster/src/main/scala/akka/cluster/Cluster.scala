@@ -788,7 +788,7 @@ class DefaultClusterNode private[akka] (
         }
 
         // create NODE -> UUID mapping
-        ignore[DataExistsException](coordination.create(nodeToUuidsPathFor(nodeName, uuid), true))
+        ignore[DataExistsException](coordination.create(nodeToUuidsPathFor(nodeName, uuid), Boolean.box(true)))
 
         // create ADDRESS -> UUIDs mapping
         ignore[DataExistsException](coordination.createPath(actorAddressToUuidsPathFor(actorAddress, uuid)))

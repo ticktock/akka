@@ -10,16 +10,11 @@ import akka.event.EventHandler
 import akka.config.Config
 import akka.util.Switch
 import akka.util.Helpers._
-import akka.cluster.zookeeper.AkkaZkClient
+import akka.cluster.storage.{ MissingDataException, DataExistsException, BadVersionException, StorageException }
 
 import coordination.CoordinationLockListener
-import org.apache.zookeeper.CreateMode
-import org.apache.zookeeper.recipes.lock.{ WriteLock, LockListener }
-
-import org.I0Itec.zkclient.exception.{ ZkNoNodeException, ZkNodeExistsException }
 
 import scala.collection.immutable.Seq
-import scala.collection.JavaConversions.collectionAsScalaIterable
 
 import java.util.concurrent.{ CountDownLatch, TimeUnit }
 import storage.DataExistsException
@@ -95,7 +90,7 @@ object ClusterDeployer extends ActorDeployer {
           try {
             Some(coordination.read[Deploy](deploymentAddressPath.format(address)))
           } catch {
-            case e: ZkNoNodeException ⇒ None
+            case e: MissingDataException ⇒ None
             case e: Exception ⇒
               EventHandler.warning(this, e.toString)
               None
@@ -110,7 +105,7 @@ object ClusterDeployer extends ActorDeployer {
       try {
         coordination.getChildren(deploymentPath).toList
       } catch {
-        case e: ZkNoNodeException ⇒ List[String]()
+        case e: MissingDataException ⇒ List[String]()
       }
     val deployments = addresses map { address ⇒
       coordination.read[Deploy](deploymentAddressPath.format(address))
@@ -186,7 +181,7 @@ object ClusterDeployer extends ActorDeployer {
 
   // FIXME in future - add watch to this path to be able to trigger redeployment, and use this method to trigger redeployment
   private def invalidateDeploymentInCluster() {
-    ignore[ZkNoNodeException](coordination.delete(isDeploymentCompletedInClusterLockPath))
+    ignore[MissingDataException](coordination.delete(isDeploymentCompletedInClusterLockPath))
   }
 
   private def ensureRunning[T](body: ⇒ T): T = {

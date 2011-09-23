@@ -100,6 +100,25 @@ object AkkaBuild extends Build {
      )
    ) configs (MultiJvm)
 
+
+    lazy val postgresCoordination = Project(
+     id = "akka-coordination-postgres",
+    base = file("akka-coordination-postgres"),
+     dependencies = Seq(cluster,actorTests % "test->test" , testkit % "test"),
+     settings = defaultSettings ++ multiJvmSettings ++ Seq(
+       libraryDependencies ++= Dependencies.postgresCoordination,
+       extraOptions in MultiJvm <<= (sourceDirectory in MultiJvm) { src =>
+         (name: String) => (src ** (name + ".conf")).get.headOption.map("-Dakka.config=" + _.absolutePath).toSeq
+      },
+       scalatestOptions in MultiJvm := Seq("-r", "org.scalatest.akka.QuietReporter"),
+       jvmOptions in MultiJvm := {
+         if (getBoolean("sbt.log.noformat")) Seq("-Dakka.test.nocolor=true") else Nil
+       },
+       test in Test <<= (test in Test) dependsOn (test in MultiJvm)
+     )
+   ) configs (MultiJvm)
+
+
   lazy val http = Project(
     id = "akka-http",
     base = file("akka-http"),
@@ -418,6 +437,8 @@ object Dependencies {
   // TODO: resolve Jetty version conflict
   val sampleCamel = Seq(camelCore, camelSpring, commonsCodec, Runtime.camelJms, Runtime.activemq, Runtime.springJms,
     Test.junit, Test.scalatest, Test.logback)
+
+  val postgresCoordination = Seq(pgjdbc,scalaArm)
 }
 
 object Dependency {
@@ -434,6 +455,7 @@ object Dependency {
     val Multiverse   = "0.6.2"
     val Netty        = "3.2.5.Final"
     val Protobuf     = "2.4.1"
+    val Postgres     = "9.0-801.jdbc4"
     val Scalatest    = "1.6.1"
     val Slf4j        = "1.6.0"
     val Spring       = "3.0.5.RELEASE"
@@ -465,9 +487,11 @@ object Dependency {
   val multiverse    = "org.multiverse"              % "multiverse-alpha"       % V.Multiverse // ApacheV2
   val netty         = "org.jboss.netty"             % "netty"                  % V.Netty      // ApacheV2
   val osgi          = "org.osgi"                    % "org.osgi.core"          % "4.2.0"      // ApacheV2
+  val pgjdbc        = "postgresql"                  % "postgresql"             % V.Postgres
   val protobuf      = "com.google.protobuf"         % "protobuf-java"          % V.Protobuf   // New BSD
   val redis         = "net.debasishg"               % "redisclient_2.9.0"      % "2.3.1"      // ApacheV2
   val sjson         = "net.debasishg"               % "sjson_2.9.0"            % "0.11"       // ApacheV2
+  val scalaArm      = "com.github.jsuereth.scala-arm" % "scala-arm_2.9.1"        % "1.0"        //EPFL/Scala
   val slf4jApi      = "org.slf4j"                   % "slf4j-api"              % V.Slf4j      // MIT
   val springBeans   = "org.springframework"         % "spring-beans"           % V.Spring     // ApacheV2
   val springContext = "org.springframework"         % "spring-context"         % V.Spring     // ApacheV2

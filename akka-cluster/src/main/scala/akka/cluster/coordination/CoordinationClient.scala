@@ -34,19 +34,19 @@ trait CoordinationClient {
 
   def deleteRecursive(path: String): Boolean
 
-  def create(path: String, value: Any)
+  def create(path: String, value: AnyRef)
 
-  def createEphemeral(path: String, value: Any)
+  def createEphemeral(path: String, value: AnyRef)
 
-  def createEphemeralSequential(path: String, value: Any): String
+  def createEphemeralSequential(path: String, value: AnyRef): String
 
   def read[T](path: String): T
 
-  def readWithVersion(path: String): (Any, Long)
+  def readWithVersion[T](path: String): (T, Long)
 
-  def update(path: String, value: Any, version: Long)
+  def update(path: String, value: AnyRef, version: Long)
 
-  def forceUpdate(path: String, value: Any)
+  def forceUpdate(path: String, value: AnyRef)
 
   def getChildren(path: String): List[String]
 

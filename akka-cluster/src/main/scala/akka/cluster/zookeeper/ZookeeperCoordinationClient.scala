@@ -115,18 +115,18 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
 
   /*Exception handling partial functions that map store specific exceptions to generic exceptions*/
 
-  def readWithVersion(path: String): (Any, Long) = {
+  def readWithVersion[T](path: String): (T, Long) = {
     val verData = readData(path)
-    (zkClient.zkSerializer.deserialize(verData.data), verData.version)
+    (zkClient.zkSerializer.deserialize(verData.data).asInstanceOf[T], verData.version)
   }
 
-  def update(path: String, value: Any, version: Long) = updateData(path, zkClient.zkSerializer.serialize(value), version)
+  def update(path: String, value: AnyRef, version: Long) = updateData(path, zkClient.zkSerializer.serialize(value), version)
 
-  def createEphemeral(path: String, value: Any) = handleWith(createFailed(path)) {
+  def createEphemeral(path: String, value: AnyRef) = handleWith(createFailed(path)) {
     zkClient.createEphemeral(path, value)
   }
 
-  def createEphemeralSequential(path: String, value: Any): String = handleWith(createFailed(path)) {
+  def createEphemeralSequential(path: String, value: AnyRef): String = handleWith(createFailed(path)) {
     zkClient.createEphemeralSequential(path, value)
   }
 
@@ -150,13 +150,13 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     zkClient.connection.create(path, null, CreateMode.EPHEMERAL)
   }
 
-  def create(path: String, value: Any) = handleWith(createFailed(path)) {
+  def create(path: String, value: AnyRef) = handleWith(createFailed(path)) {
     zkClient.createPersistent(path, value)
   }
 
   def read[T](path: String): T = zkClient.zkSerializer.deserialize(readData(path).data).asInstanceOf[T]
 
-  def forceUpdate(path: String, value: Any) = forceUpdateData(path, zkClient.zkSerializer.serialize(value))
+  def forceUpdate(path: String, value: AnyRef) = forceUpdateData(path, zkClient.zkSerializer.serialize(value))
 
   def stopListenAll() = {
     zkClient.unsubscribeAll()
