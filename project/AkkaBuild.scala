@@ -86,7 +86,7 @@ object AkkaBuild extends Build {
    lazy val cluster = Project(
      id = "akka-cluster",
     base = file("akka-cluster"),
-     dependencies = Seq(stm, remote, actorTests % "test->test", remote % "test->test", testkit % "test"),
+     dependencies = Seq(stm, remote, actorTests % "test->test", remote % "test->test;multi-jvm->multi-jvm", testkit % "test"),
      settings = defaultSettings ++ multiJvmSettings ++ Seq(
        libraryDependencies ++= Dependencies.cluster,
        extraOptions in MultiJvm <<= (sourceDirectory in MultiJvm) { src =>
