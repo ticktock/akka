@@ -4,24 +4,23 @@ import akka.cluster.coordination.{ CoordinationNodeListener, CoordinationConnect
 import org.postgresql.PGConnection
 import PostgresCoordinationClient._
 import javax.sql._
-import org.postgresql.ds._
 import akka.actor._
 import akka.actor.Actor._
 import akka.event.EventHandler._
 import akka.cluster.ChangeListener._
-import akka.cluster.storage.VersionedData
 import akka.serialization.JavaSerializer
 import akka.util.Helpers._
-import akka.util.Index
 import org.postgresql.util._
 import resource._
 import java.sql._
-import java.util.concurrent.ConcurrentSkipListSet
 import java.util.Arrays
 import collection.JavaConversions._
+import collection.mutable.{ HashMap, HashSet, LinkedHashSet }
 import scala.Array
 import java.net.URI
 import scala.util.Properties
+import akka.cluster.storage.{ MissingDataException, BadVersionException, VersionedData }
+import org.postgresql.ds._
 
 object PostgresCoordinationClient {
 
@@ -66,10 +65,10 @@ object PostgresCoordinationClient {
   case class ListenConnection(listener: CoordinationConnectionListener) extends CoordinationOp
   case class Unlisten(path: String, listener: CoordinationNodeListener) extends CoordinationOp
   case class UnlistenConnection(listener: CoordinationConnectionListener) extends CoordinationOp
-  case class Notify(path: String, children: List[String]) extends CoordinationOp
+  case class Notify(path: String, children: List[String]) //not a coordination op
   case class GetChildren(path: String) extends CoordinationOp
   case object UnlistenAll extends CoordinationOp
-  case object PollNotify extends CoordinationOp
+  case object PollNotify
 }
 
 class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
@@ -142,20 +141,40 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     }
   }
 
-  def update(u: Update): Return[Unit] = u.version match {
-    case Some(version) ⇒ withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ? AND VERSION = ?") { stmt ⇒
-      import stmt._
-      setBytes(1, u.value)
-      setString(2, u.path)
-      setLong(3, version)
-      expect(1, executeUpdate())
+  def update(u: Update): Return[VersionedData] = {
+    u.version match {
+      case Some(version) ⇒
+        withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ? AND VERSION = ?") { stmt ⇒
+          import stmt._
+          setBytes(1, u.value)
+          setString(2, u.path)
+          setLong(3, version)
+          if (executeUpdate() != 1) throw CoordinationClient.writeDataFailedBadVersion(u.path, null)
+        }
+        withPreparedStatement("SELECT VALUE, VERSION FROM AKKA_COORDINATION WHERE PATH = ? AND VERSION = ? ") { stmt ⇒
+          stmt.setString(1, u.path)
+          stmt.setLong(2, version + 1)
+          managed(stmt.executeQuery()).acquireAndGet { rs ⇒
+            if (rs.next()) new VersionedData(rs.getBytes(1), rs.getLong(2)) else throw CoordinationClient.writeDataFailedBadVersion(u.path, null)
+          }
+        }
+
+      case None ⇒
+        withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ?") { stmt ⇒
+          import stmt._
+          setBytes(1, u.value)
+          setString(2, u.path)
+          if (executeUpdate() != 1) throw CoordinationClient.writeDataFailedMissingData(u.path, null)
+        }
+        withPreparedStatement("SELECT VALUE, VERSION FROM AKKA_COORDINATION WHERE PATH = ? ") { stmt ⇒
+          stmt.setString(1, u.path)
+          managed(stmt.executeQuery()).acquireAndGet { rs ⇒
+            if (rs.next()) new VersionedData(rs.getBytes(1), rs.getLong(2)) else throw CoordinationClient.writeDataFailedMissingData(u.path, null)
+          }
+        }
+
     }
-    case None ⇒ withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ?") { stmt ⇒
-      import stmt._
-      setBytes(1, u.value)
-      setString(2, u.path)
-      expect(1, executeUpdate())
-    }
+
   }
 
   def delete(d: Delete): Return[Boolean] = withPreparedStatement("DELETE FROM AKKA_COORDINATION WHERE PATH = ?") { stmt ⇒
@@ -177,10 +196,9 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
       expect(0, executeUpdate("""LISTEN "%s" """.format(l.path)))
     }
 
-  def unlisten(u: Unlisten): Return[Unit] = withPreparedStatement("UNLISTEN ?") { stmt ⇒
+  def unlisten(u: Unlisten): Return[Unit] = managed(conn.createStatement()).acquireFor { stmt ⇒
     import stmt._
-    setString(1, u.path)
-    expect(0, executeUpdate())
+    expect(0, executeUpdate("""UNLISTEN "%s" """.format(u.path)))
   }
 
   def notifyListeners(): Return[Unit] = withPreparedStatement("SELECT 1") { stmt ⇒
@@ -201,8 +219,9 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
 class CoordinationActor extends Actor {
 
   val pgClient: PostgresClient = new PostgresClient(DS.conn(), self)
-  val nodeListeners = new Index[String, CoordinationNodeListener]
-  val connectionListeners = new ConcurrentSkipListSet[CoordinationConnectionListener]
+  val nodeListeners = new HashMap[String, LinkedHashSet[CoordinationNodeListener]]
+  val connectionListeners = new HashSet[CoordinationConnectionListener]
+  var listening = false
 
   override def postStop() = pgClient.close
 
@@ -215,6 +234,13 @@ class CoordinationActor extends Actor {
   }
 
   protected def receive = {
+
+    case Notify(path, children) ⇒ for {
+      listeners ← nodeListeners.get(path)
+      l ← listeners
+    } spawn(l.handleChange(path, children))
+    case PollNotify ⇒ { if (listening) pgClient.notifyListeners() }
+
     case op: CoordinationOp ⇒ {
       op match {
         case i: Insert          ⇒ channel ! pgClient.insert(i)
@@ -226,12 +252,16 @@ class CoordinationActor extends Actor {
         case g: GetChildren     ⇒ channel ! pgClient.getChildren(g)
 
         case l @ Listen(path, listener) ⇒ {
-          nodeListeners.put(path, listener)
+          nodeListeners.getOrElseUpdate(path, new LinkedHashSet[CoordinationNodeListener]).add(listener)
+          listening = true
           channel ! pgClient.listen(l)
         }
 
         case u @ Unlisten(path, listener) ⇒ {
-          nodeListeners.remove(path, listener)
+          nodeListeners.get(path).foreach(_.remove(listener))
+          if (nodeListeners.foldLeft(0) { (count, entry) ⇒
+            entry match { case (p, listeners) ⇒ count + listeners.size }
+          } == 0) listening = false
           channel ! pgClient.unlisten(u)
         }
 
@@ -240,8 +270,6 @@ class CoordinationActor extends Actor {
           nodeListeners.clear
         }
 
-        case Notify(path, children)       ⇒ nodeListeners.values(path).foreach(l ⇒ spawn(l.handleChange(path, children)))
-        case PollNotify                   ⇒ pgClient.notifyListeners()
         case UnlistenConnection(listener) ⇒ channel ! { connectionListeners.remove(listener); () }
         case ListenConnection(listener)   ⇒ channel ! { connectionListeners.add(listener); () }
       }
@@ -303,7 +331,7 @@ class PostgresCoordinationClient extends CoordinationClient {
 
   def update(path: String, value: AnyRef, version: Long) = updateData(path, serializer.toBinary(value), version)
 
-  def updateData(path: String, value: Array[Byte], expectedVersion: Long) = handleOp[VersionedData](Update(path, value, expectedVersion), writeDataFailed(path))
+  def updateData(path: String, value: Array[Byte], expectedVersion: Long) = handleOp[VersionedData](Update(path, value, Some(expectedVersion)), writeDataFailed(path))
 
   def delete(path: String) = handleOp[Boolean](Delete(path), deleteFailed(path))
 
@@ -343,8 +371,7 @@ class PostgresCoordinationClient extends CoordinationClient {
     case e: SQLException if false ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
     case e: SQLException if false ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
     case e: SQLException if false ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
-    case e: SQLException if false ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
-    case e: SQLException          ⇒ CoordinationClient.writeDataFailed(key, e)
+
   }
 
   private def readDataFailed(key: String): ToStorageException = {
@@ -358,9 +385,11 @@ class PostgresCoordinationClient extends CoordinationClient {
   }
 
   private def createFailed(key: String): ToStorageException = {
-    case e: SQLException if false ⇒ CoordinationClient.createFailedDataExists(key, e)
-    case e: SQLException if false ⇒ CoordinationClient.createFailedDataExists(key, e)
-    case e: SQLException          ⇒ CoordinationClient.createFailed(key, e)
+    case e: PSQLException if e.getSQLState.equals("23505") ⇒ CoordinationClient.createFailedDataExists(key, e)
+    case e: SQLException ⇒ {
+      error(e, this, "State:" + e.getSQLState)
+      CoordinationClient.createFailed(key, e)
+    }
   }
 }
 
@@ -374,7 +403,7 @@ object DS {
   val url = new URI(Properties.envOrElse("DATABASE_URL", "postgres://user:pass@host/database"))
 
   //get arm working with autocommit false commits/
-  val ds = new PGPoolingDataSource
+  val ds = new PGSimpleDataSource
   ds.setServerName(url.getHost)
   val userInfo = url.getUserInfo.split(":")
   ds.setPassword(userInfo(1))

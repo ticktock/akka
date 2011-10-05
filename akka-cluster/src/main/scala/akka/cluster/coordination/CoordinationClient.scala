@@ -69,6 +69,7 @@ trait CoordinationClient {
   def getLock(path: String, listener: CoordinationLockListener): CoordinationLock
 
   val defaultStorageException: ToStorageException = {
+    case s: StorageException   ⇒ s
     case underlying: Exception ⇒ new StorageException("Unexpected exception from the underlying storage impl", underlying)
   }
 
