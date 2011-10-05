@@ -123,6 +123,16 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.create(child2, child2)
       client.getChildren(path) must be(List(child1, child2))
     }
+
+    "recursively delete nodes" in {
+      val path = stampedPath("/path/to/recursive/delete")
+      client.createPath(path)
+      val child = path + "/child"
+      client.createPath(child)
+      client.exists(child) must be(true)
+      client.deleteRecursive(path)
+      client.exists(child) must be(false)
+    }
   }
 
   def stampedPath(path: String): String = {
