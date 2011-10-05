@@ -113,6 +113,16 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.delete(path2 + "/bar")
       latch.await(1, TimeUnit.SECONDS) must be(false)
     }
+
+    "successfully get children" in {
+      val path = stampedPath("/path/to/get/children")
+      val child1 = path + "/child1"
+      val child2 = path + "/child2"
+      client.createPath(path)
+      client.create(child1, child1)
+      client.create(child2, child2)
+      client.getChildren(path) must be(List(child1, child2))
+    }
   }
 
   def stampedPath(path: String): String = {

@@ -15,12 +15,12 @@ import resource._
 import java.sql._
 import java.util.Arrays
 import collection.JavaConversions._
-import collection.mutable.{ HashMap, HashSet, LinkedHashSet }
 import scala.Array
 import java.net.URI
 import scala.util.Properties
 import akka.cluster.storage.{ MissingDataException, BadVersionException, VersionedData }
 import org.postgresql.ds._
+import collection.mutable.{ ArrayBuffer, HashMap, HashSet, LinkedHashSet }
 
 object PostgresCoordinationClient {
 
@@ -129,15 +129,15 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     }
   }
 
-  def getChildren(g: GetChildren): Return[List[String]] = withPreparedStatement("SELECT '/' || PATH FROM AKKA_COORDINATION_PATHS WHERE PARENT_PATH = ?") { stmt ⇒
+  def getChildren(g: GetChildren): Return[List[String]] = withPreparedStatement("SELECT '/' || PATH FROM AKKA_COORDINATION_PATHS WHERE PARENT = ? ORDER BY PATH") { stmt ⇒
     import stmt._
     setString(1, g.path.tail)
     managed(executeQuery()).acquireAndGet { rs ⇒
-      var list = List.empty[String]
+      val list = new ArrayBuffer[String]()
       while (rs.next()) {
-        list = rs.getString(1) :: list
+        list add rs.getString(1)
       }
-      list
+      list.toList
     }
   }
 
@@ -269,7 +269,6 @@ class CoordinationActor extends Actor {
           nodeListeners.clear
           listening = false
           pgClient.unlisten(Unlisten("*", null))
-
         }
 
         case UnlistenConnection(listener) ⇒ channel ! { connectionListeners.remove(listener); () }
