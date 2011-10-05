@@ -266,14 +266,16 @@ class CoordinationActor extends Actor {
         }
 
         case UnlistenAll ⇒ channel ! {
-          pgClient.unlisten(Unlisten("*", null))
           nodeListeners.clear
+          listening = false
+          pgClient.unlisten(Unlisten("*", null))
+
         }
 
         case UnlistenConnection(listener) ⇒ channel ! { connectionListeners.remove(listener); () }
         case ListenConnection(listener)   ⇒ channel ! { connectionListeners.add(listener); () }
       }
-      self ! PollNotify
+      if (listening) self ! PollNotify
     }
 
   }

@@ -38,12 +38,30 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.read[String](path) must be(updated)
     }
 
-    "must throw a BadVersionException" in {
+    /*"must throw a BadVersionException" in {
       val path = stampedPath("/path/to/update/badversion")
       client.create(path, path)
       val (rpath, version) = client.readWithVersion[String](path)
       val updated = stampedPath(path)
       evaluating(client.update(path, updated, version - 1)) must produce[BadVersionException]
+    }  */
+
+    "must force update data successfully" in {
+      val path = stampedPath("/path/to/force/update")
+      client.create(path, path)
+      val (rpath, version) = client.readWithVersion[String](path)
+      val updated = stampedPath(path)
+      client.forceUpdate(path, updated)
+      client.read[String](path) must be(updated)
+      client.readData(path).version must be(version + 1)
+    }
+
+    "must delete data successfully" in {
+      val path = stampedPath("/path/to/force/update")
+      client.create(path, path)
+      client.exists(path) must be(true)
+      client.delete(path)
+      client.exists(path) must be(false)
     }
 
     "successfully listen" in {
@@ -53,13 +71,47 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
           latch.countDown()
         }
       }
-      val path = stampedPath("/path/to/foo")
+      val path = stampedPath("/path/to/listen")
       client.createPath(path)
       client.listenTo(path, l)
       client.create(path + "/bar", "baz")
       client.delete(path + "/bar")
       latch.await(2, TimeUnit.SECONDS) must be(true)
 
+    }
+
+    "succesfully unlisten" in {
+      val latch = new CountDownLatch(1)
+      val l = new CoordinationNodeListener {
+        def handleChange(path: String, children: List[String]) = {
+          latch.countDown()
+        }
+      }
+      val path = stampedPath("/path/to/unlisten")
+      client.createPath(path)
+      client.listenTo(path, l)
+      client.stopListenTo(path, l)
+      client.create(path + "/bar", "baz")
+      client.delete(path + "/bar")
+      latch.await(1, TimeUnit.SECONDS) must be(false)
+    }
+
+    "succesfully unlisten all" in {
+      val latch = new CountDownLatch(1)
+      val l = new CoordinationNodeListener {
+        def handleChange(path: String, children: List[String]) = {
+          latch.countDown()
+        }
+      }
+      val path = stampedPath("/path/to/unlistenall1")
+      val path2 = stampedPath("/path/to/unlistenall2")
+      client.createPath(path)
+      client.createPath(path2)
+      client.listenTo(path, l)
+      client.stopListenAll()
+      client.create(path + "/bar", "baz")
+      client.delete(path2 + "/bar")
+      latch.await(1, TimeUnit.SECONDS) must be(false)
     }
   }
 
