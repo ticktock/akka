@@ -46,39 +46,21 @@ DECLARE
     _fullpath text;
 BEGIN
     select exists(select path from AKKA_EPHEMERAL_SEQUENTIAL where path = _path) into _exists;
-    IF(exists) THEN
-      SELECT counter FROM AKKA_EPHEMERAL_SEQUENTIAL where path = _path FOR UPDATE into _seq;
-      UPDATE AKKA_EPHEMERAL_SEQUENTIAL SET counter = _seq + 1 where PATH = _path;
+    IF(_exists) THEN
+      SELECT counter + 1 FROM AKKA_EPHEMERAL_SEQUENTIAL where path = _path FOR UPDATE into _seq;
+      UPDATE AKKA_EPHEMERAL_SEQUENTIAL SET counter = _seq where PATH = _path;
     ELSE
       INSERT INTO AKKA_EPHEMERAL_SEQUENTIAL (PATH, COUNTER) VALUES (_path, 1);
       _seq := 1;
     END IF;
-      _fullpath := _path || '_' || lpad(_seq, 10, '0');
+      _fullpath := _path || '_' || lpad(CAST(_seq as TEXT), 10, '0');
       INSERT INTO AKKA_COORDINATION(PATH, VALUE, NODE, CREATOR, UPDATED, TIMEOUT) values(_fullpath, _val,'EPHEMERAL_SEQUENTIAL', _creator, CURRENT_TIMESTAMP, _timeout);
-    RETURN _path;
+    RETURN _fullpath;
 END;
 $$ LANGUAGE plpgsql;
 
 
-CREATE OR REPLACE FUNCTION update_node(varchar(1024), bytea, bigint)  RETURNS BIGINT AS $$
-DECLARE
-    _path ALIAS FOR $1;
-    _val ALIAS FOR $2;
-    _curr ALIAS FOR $3;
-    _ver bigint;
-BEGIN
-    SELECT version  FROM AKKA_COORDINATION  where path = _path FOR UPDATE into _ver;
-    IF(_curr != NULL && (_curr != _ver)) THEN
-        RAISE 'Bad Version Specified for %s', _path;
-    END IF;
-    IF(_ver == NULL) THEN 
-        RAISE 'Missing Data for %s', _path;
-    END IF;
-    UPDATE AKKA_COORDINATION SET VALUE = _val, VERSION = _ver + 1 where PATH = _path;
-    RETURN _ver;
-END;
-$$ LANGUAGE plpgsql;
-
+ 
 
 CREATE OR REPLACE FUNCTION find_parent(text) RETURNS TEXT AS $$
 DECLARE
