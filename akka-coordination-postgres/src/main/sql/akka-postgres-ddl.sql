@@ -60,6 +60,25 @@ END;
 $$ LANGUAGE plpgsql;
 
 
+CREATE OR REPLACE FUNCTION update_node(varchar(1024), bytea, bigint)  RETURNS BIGINT AS $$
+DECLARE
+    _path ALIAS FOR $1;
+    _val ALIAS FOR $2;
+    _curr ALIAS FOR $3;
+    _ver bigint;
+BEGIN
+    SELECT version  FROM AKKA_COORDINATION  where path = _path FOR UPDATE into _ver;
+    IF(_curr != NULL OR _curr != _ver) THEN
+        RAISE SQLSTATE '2F002' USING MESSAGE 'Bad Version Specified for ' || _path;
+    END IF;
+    IF(_ver = NULL) THEN 
+        RAISE SQLSTATE '02000' USNING MESSAGE 'Missing Data for ' || _path;
+    END IF;
+    UPDATE AKKA_COORDINATION SET VALUE = _val, VERSION = _ver + 1 where PATH = _path;
+    RETURN _ver;
+END;
+$$ LANGUAGE plpgsql;
+
  
 
 CREATE OR REPLACE FUNCTION find_parent(text) RETURNS TEXT AS $$
