@@ -1,10 +1,84 @@
-CREATE TYPE node_type as ENUM('PERSISTENT', 'EPHEMERAL', 'EPHEMERAL_SEQUENTIAL')
+CREATE TYPE node_type as ENUM('PERSISTENT', 'EPHEMERAL', 'EPHEMERAL_SEQUENTIAL');
 
 CREATE TABLE AKKA_COORDINATION(path varchar(1024) PRIMARY KEY, value bytea, node node_type, creator varchar(36), updated timestamp with time zone, timeout interval hour to second, version bigint not null default(1));
 
 CREATE TABLE AKKA_COORDINATION_PATHS(path varchar(1024) PRIMARY KEY, parent varchar(1024));
 
 CREATE TABLE AKKA_EPHEMERAL_CLEANER(txid bigint PRIMARY KEY);
+
+CREATE TABLE AKKA_EPHEMERAL_SEQUENTIAL(path varchar(1024) PRIMARY KEY, counter bigint default 1);
+
+
+CREATE OR REPLACE FUNCTION create_persistent(varchar(1024), bytea, varchar(36), interval)  RETURNS TEXT AS $$
+DECLARE
+    _path ALIAS FOR $1;
+    _val ALIAS FOR $2;
+    _creator ALIAS FOR $3;
+    _timeout ALIAS FOR $4;
+BEGIN
+    INSERT INTO AKKA_COORDINATION(PATH, VALUE, NODE, CREATOR, UPDATED, TIMEOUT) values(_path,_val,'PERSISTENT',_creator, CURRENT_TIMESTAMP, _timeout); 
+    RETURN _path;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION create_ephemeral(varchar(1024), bytea, varchar(36), interval)  RETURNS TEXT AS $$
+DECLARE
+    _path ALIAS FOR $1;
+    _val ALIAS FOR $2;
+    _creator ALIAS FOR $3;
+    _timeout ALIAS FOR $4;
+BEGIN
+    INSERT INTO AKKA_COORDINATION(PATH, VALUE, NODE, CREATOR, UPDATED, TIMEOUT) values(_path,_val,'EPHEMERAL', _creator, CURRENT_TIMESTAMP, _timeout);
+    RETURN _path;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION create_ephemeral_sequential(varchar(1024), bytea, varchar(36), interval)  RETURNS TEXT AS $$
+DECLARE
+    _path ALIAS FOR $1;
+    _val ALIAS FOR $2;
+    _creator ALIAS FOR $3;
+    _timeout ALIAS FOR $4;
+    _seq bigint;
+    _exists boolean;
+    _fullpath text;
+BEGIN
+    select exists(select path from AKKA_EPHEMERAL_SEQUENTIAL where path = _path) into _exists;
+    IF(exists) THEN
+      SELECT counter FROM AKKA_EPHEMERAL_SEQUENTIAL where path = _path FOR UPDATE into _seq;
+      UPDATE AKKA_EPHEMERAL_SEQUENTIAL SET counter = _seq + 1 where PATH = _path;
+    ELSE
+      INSERT INTO AKKA_EPHEMERAL_SEQUENTIAL (PATH, COUNTER) VALUES (_path, 1);
+      _seq := 1;
+    END IF;
+      _fullpath := _path || '_' || lpad(_seq, 10, '0');
+      INSERT INTO AKKA_COORDINATION(PATH, VALUE, NODE, CREATOR, UPDATED, TIMEOUT) values(_fullpath, _val,'EPHEMERAL_SEQUENTIAL', _creator, CURRENT_TIMESTAMP, _timeout);
+    RETURN _path;
+END;
+$$ LANGUAGE plpgsql;
+
+
+CREATE OR REPLACE FUNCTION update_node(varchar(1024), bytea, bigint)  RETURNS BIGINT AS $$
+DECLARE
+    _path ALIAS FOR $1;
+    _val ALIAS FOR $2;
+    _curr ALIAS FOR $3;
+    _ver bigint;
+BEGIN
+    SELECT version  FROM AKKA_COORDINATION  where path = _path FOR UPDATE into _ver;
+    IF(_curr != NULL && (_curr != _ver)) THEN
+        RAISE 'Bad Version Specified for %s', _path;
+    END IF;
+    IF(_ver == NULL) THEN 
+        RAISE 'Missing Data for %s', _path;
+    END IF;
+    UPDATE AKKA_COORDINATION SET VALUE = _val, VERSION = _ver + 1 where PATH = _path;
+    RETURN _ver;
+END;
+$$ LANGUAGE plpgsql;
+
 
 CREATE OR REPLACE FUNCTION find_parent(text) RETURNS TEXT AS $$
 DECLARE
@@ -40,7 +114,7 @@ CREATE OR REPLACE FUNCTION process_notify_child_listeners() RETURNS trigger AS $
                 PERFORM pg_notify(node, NULL);
             RETURN OLD;
         ELSIF(TG_OP = 'UPDATE') THEN
-			RETURN NEW;
+            RETURN NEW;
         ELSIF (TG_OP = 'INSERT') THEN
                 node := substring(NEW.path from 2);
                 PERFORM pg_notify('/' || find_parent(node), node_siblings(node));
@@ -77,13 +151,12 @@ BEFORE INSERT OR UPDATE OR DELETE ON AKKA_COORDINATION
     EXECUTE PROCEDURE process_ephemerals();
 
 
---todo DISSALOW | char in paths
 CREATE OR REPLACE FUNCTION process_path_insert() RETURNS trigger AS $process_path_insert$
 DECLARE
   pathNoSlash text;
 BEGIN
   IF(substring(NEW.path from 1 for 1) != '/') THEN
-      RAISE 'Illegal path format (%), paths must begin with /', NEW.path;		
+      RAISE 'Illegal path format (%), paths must begin with /', NEW.path;       
   END IF;
   pathNoSlash := substring(NEW.path from 2);
   INSERT INTO AKKA_COORDINATION_PATHS VALUES(pathNoSlash, find_parent(pathNoSlash));
@@ -106,16 +179,9 @@ CREATE TRIGGER path_delete
 BEFORE DELETE ON AKKA_COORDINATION
     FOR EACH ROW EXECUTE PROCEDURE process_path_delete();
 
-CREATE OR REPLACE FUNCTION process_update_version() RETURNS trigger AS $process_update_version$
-BEGIN
-  NEW.version := OLD.version + 1;
-  RETURN NEW;
-END;
-$process_update_version$ LANGUAGE plpgsql VOLATILE;
 
-CREATE TRIGGER update_version
-BEFORE UPDATE ON AKKA_COORDINATION
-    FOR EACH ROW EXECUTE PROCEDURE process_update_version();
+
+
 
 
 
