@@ -21,6 +21,7 @@ import scala.util.Properties
 import akka.cluster.storage.{ MissingDataException, BadVersionException, VersionedData }
 import org.postgresql.ds._
 import collection.mutable.{ ArrayBuffer, HashMap, HashSet, LinkedHashSet }
+import java.util.concurrent.TimeUnit
 
 object PostgresCoordinationClient {
 
@@ -68,18 +69,22 @@ object PostgresCoordinationClient {
   case class Notify(path: String, children: List[String]) //not a coordination op
   case class GetChildren(path: String) extends CoordinationOp
   case object UnlistenAll extends CoordinationOp
-  case object PollNotify
+  case object TouchEphemeralsAndDoNotification
 }
 
 class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
 
-  val uuid = new Uuid
+  val uuid = coordinationActor.uuid
   val serializer = new JavaSerializer
 
-  def close = conn.close()
+  def close() = conn.close()
 
   def withPreparedStatement[T](statement: String)(block: PreparedStatement ⇒ T): Return[T] = {
     managed(conn.prepareStatement(statement)).acquireFor(block)
+  }
+
+  def withCallableStatement[T](statement: String)(block: CallableStatement ⇒ T): Return[T] = {
+    managed(conn.prepareCall(statement)).acquireFor(block)
   }
 
   def expect(num: Int, block: ⇒ Int) = {
@@ -92,19 +97,24 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     if (res <= num) throw new SQLException("Expected %d updates but got %d".format(num, res))
   }
 
-  def insert(in: Insert): Return[Unit] = withPreparedStatement {
-    """
-    INSERT INTO AKKA_COORDINATION (PATH,VALUE,NODE,CREATOR,UPDATED,TIMEOUT)
-    VALUES (?,?,?,?,CURRENT_TIMESTAMP,?)
-    """
-  } { stmt ⇒
-    import stmt._
-    setString(1, in.path)
-    setBytes(2, in.value)
-    setObject(3, in.nodeType)
-    setString(4, uuid.toString)
-    setObject(5, in.timeout.interval)
-    expect(1, executeUpdate())
+  def insert(in: Insert): Return[String] = {
+    val fn = { stmt: CallableStatement ⇒
+      import stmt._
+      setString(1, in.path)
+      setBytes(2, in.value)
+      setString(3, uuid.toString)
+      setObject(4, in.timeout.interval)
+      executeUpdate()
+      managed(getResultSet).acquireAndGet { rs ⇒
+        rs.next()
+        rs.getString(1)
+      }
+    }
+    in.nodeType match {
+      case PERSISTENT           ⇒ withCallableStatement("{call create_persistent(?,?,?,?) }")(fn)
+      case EPHEMERAL            ⇒ withCallableStatement("{call create_ephemeral(?,?,?,?) }")(fn)
+      case EPHEMERAL_SEQUENTIAL ⇒ withCallableStatement("{call create_ephemeral_sequential(?,?,?,?) }")(fn)
+    }
   }
 
   def exists(e: Exists): Return[Boolean] = withPreparedStatement("SELECT PATH FROM AKKA_COORDINATION WHERE PATH = ?") { stmt ⇒
@@ -141,40 +151,19 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     }
   }
 
-  def update(u: Update): Return[VersionedData] = {
+  def update(u: Update): Return[VersionedData] = withCallableStatement("{call update_node(?,?,?)}") { stmt ⇒
+    import stmt._
+    setString(1, u.path)
+    setBytes(2, u.value)
     u.version match {
-      case Some(version) ⇒
-        withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ? AND VERSION = ?") { stmt ⇒
-          import stmt._
-          setBytes(1, u.value)
-          setString(2, u.path)
-          setLong(3, version)
-          if (executeUpdate() != 1) throw CoordinationClient.writeDataFailedBadVersion(u.path, null)
-        }
-        withPreparedStatement("SELECT VALUE, VERSION FROM AKKA_COORDINATION WHERE PATH = ? AND VERSION = ? ") { stmt ⇒
-          stmt.setString(1, u.path)
-          stmt.setLong(2, version + 1)
-          managed(stmt.executeQuery()).acquireAndGet { rs ⇒
-            if (rs.next()) new VersionedData(rs.getBytes(1), rs.getLong(2)) else throw CoordinationClient.writeDataFailedBadVersion(u.path, null)
-          }
-        }
-
-      case None ⇒
-        withPreparedStatement("UPDATE AKKA_COORDINATION SET VALUE = ? WHERE PATH = ?") { stmt ⇒
-          import stmt._
-          setBytes(1, u.value)
-          setString(2, u.path)
-          if (executeUpdate() != 1) throw CoordinationClient.writeDataFailedMissingData(u.path, null)
-        }
-        withPreparedStatement("SELECT VALUE, VERSION FROM AKKA_COORDINATION WHERE PATH = ? ") { stmt ⇒
-          stmt.setString(1, u.path)
-          managed(stmt.executeQuery()).acquireAndGet { rs ⇒
-            if (rs.next()) new VersionedData(rs.getBytes(1), rs.getLong(2)) else throw CoordinationClient.writeDataFailedMissingData(u.path, null)
-          }
-        }
-
+      case Some(version) ⇒ setLong(3, version)
+      case None          ⇒ setNull(3, Types.BIGINT)
     }
-
+    executeUpdate()
+    managed(getResultSet).acquireAndGet { rs ⇒
+      rs.next()
+      new VersionedData(u.value, rs.getLong(1))
+    }
   }
 
   def delete(d: Delete): Return[Boolean] = withPreparedStatement("DELETE FROM AKKA_COORDINATION WHERE PATH = ?") { stmt ⇒
@@ -190,6 +179,13 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     executeUpdate() > 0
   }
 
+  def deleteEphemerals(): Return[Unit] = withPreparedStatement("DELETE FROM AKKA_COORDINATION WHERE CREATOR = ? AND NODE IN ('EPHEMERAL', 'EPHEMERAL_SEQUENTIAL') ") { stmt ⇒
+    import stmt._
+    setString(1, uuid.toString)
+    executeUpdate()
+    ()
+  }
+
   def listen(l: Listen): Return[Unit] =
     managed(conn.createStatement()).acquireFor { stmt ⇒
       import stmt._
@@ -201,13 +197,15 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     expect(0, executeUpdate("""UNLISTEN "%s" """.format(u.path)))
   }
 
-  def notifyListeners(): Return[Unit] = withPreparedStatement("SELECT 1") { stmt ⇒
-    managed(stmt.executeQuery()).acquireAndGet { stmt ⇒
-      for {
-        ns ← Option(conn.getNotifications)
-        n ← ns
-      } coordinationActor ! Notify(n.getName, parseNotification(n.getParameter))
-    }
+  def touchEphemeralsAndDoNotification(): Return[Unit] = withPreparedStatement("UPDATE AKKA_COORDINATION SET UPDATED = CURRENT_TIMESTAMP WHERE CREATOR = ?") { stmt ⇒
+    stmt.setString(1, uuid.toString)
+    stmt.executeUpdate()
+
+    for {
+      ns ← Option(conn.getNotifications)
+      n ← ns
+    } coordinationActor ! Notify(n.getName, parseNotification(n.getParameter))
+
   }
 
   private def parseNotification(param: String): List[String] = {
@@ -221,16 +219,21 @@ class CoordinationActor extends Actor {
   val pgClient: PostgresClient = new PostgresClient(DS.conn(), self)
   val nodeListeners = new HashMap[String, LinkedHashSet[CoordinationNodeListener]]
   val connectionListeners = new HashSet[CoordinationConnectionListener]
-  var listening = false
+  var keepalive = Scheduler.schedule(self, TouchEphemeralsAndDoNotification, 2L, 2L, TimeUnit.SECONDS)
 
-  override def postStop() = pgClient.close
+  override def postStop() = {
+    pgClient.deleteEphemerals()
+    pgClient.close
+  }
 
   override def preRestart(reason: Throwable, message: Option[Any]) = {
+    keepalive.cancel(true)
     asScalaSet(connectionListeners).foreach(l ⇒ spawn(l.handleEvent(NodeDisconnected("coordination-client"))))
   }
 
   override def postRestart(reason: Throwable) = {
     asScalaSet(connectionListeners).foreach(l ⇒ spawn(l.handleEvent(NodeConnected("coordination-client"))))
+    keepalive = Scheduler.schedule(self, TouchEphemeralsAndDoNotification, 2L, 2L, TimeUnit.SECONDS)
   }
 
   protected def receive = {
@@ -239,7 +242,7 @@ class CoordinationActor extends Actor {
       listeners ← nodeListeners.get(path)
       l ← listeners
     } spawn(l.handleChange(path, children))
-    case PollNotify ⇒ { if (listening) pgClient.notifyListeners() }
+    case TouchEphemeralsAndDoNotification ⇒ { pgClient.touchEphemeralsAndDoNotification() }
 
     case op: CoordinationOp ⇒ {
       op match {
@@ -253,28 +256,22 @@ class CoordinationActor extends Actor {
 
         case l @ Listen(path, listener) ⇒ {
           nodeListeners.getOrElseUpdate(path, new LinkedHashSet[CoordinationNodeListener]).add(listener)
-          listening = true
           channel ! pgClient.listen(l)
         }
 
         case u @ Unlisten(path, listener) ⇒ {
           nodeListeners.get(path).foreach(_.remove(listener))
-          if (nodeListeners.foldLeft(0) { (count, entry) ⇒
-            entry match { case (p, listeners) ⇒ count + listeners.size }
-          } == 0) listening = false
           channel ! pgClient.unlisten(u)
         }
 
         case UnlistenAll ⇒ channel ! {
           nodeListeners.clear
-          listening = false
           pgClient.unlisten(Unlisten("*", null))
         }
 
         case UnlistenConnection(listener) ⇒ channel ! { connectionListeners.remove(listener); () }
         case ListenConnection(listener)   ⇒ channel ! { connectionListeners.add(listener); () }
       }
-      if (listening) self ! PollNotify
     }
 
   }
@@ -297,7 +294,7 @@ class PostgresCoordinationClient extends CoordinationClient {
     }
   }
 
-  def close = coordActor.stop()
+  def close() = coordActor.stop()
 
   def createData(path: String, value: Array[Byte]) = handleOp[Unit](Insert(path, value), createFailed(path))
 
@@ -308,6 +305,8 @@ class PostgresCoordinationClient extends CoordinationClient {
   def createEphemeralData(path: String, value: Array[Byte]) = handleOp[Unit](Insert(path, value, EPHEMERAL), createFailed(path))
 
   def createEphemeralPath(path: String) = createEphemeralData(path, null)
+
+  def createEphemeralSequentialPath(path: String) = createEphemeralSequentialData(path, null)
 
   def createPath(path: String) = createData(path, null)
 

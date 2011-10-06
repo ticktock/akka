@@ -30,6 +30,8 @@ trait CoordinationClient {
 
   def createEphemeralPath(path: String)
 
+  def createEphemeralSequentialPath(path: String)
+
   def delete(path: String): Boolean
 
   def deleteRecursive(path: String): Boolean

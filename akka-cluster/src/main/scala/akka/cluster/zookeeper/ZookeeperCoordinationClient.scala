@@ -150,6 +150,10 @@ class ZookeeperCoordinationClient(zkClient: AkkaZkClient) extends CoordinationCl
     zkClient.connection.create(path, null, CreateMode.EPHEMERAL)
   }
 
+  def createEphemeralSequentialPath(path: String) = handleWith(createFailed(path)) {
+    zkClient.connection.create(path, null, CreateMode.EPHEMERAL_SEQUENTIAL)
+  }
+
   def create(path: String, value: AnyRef) = handleWith(createFailed(path)) {
     zkClient.createPersistent(path, value)
   }

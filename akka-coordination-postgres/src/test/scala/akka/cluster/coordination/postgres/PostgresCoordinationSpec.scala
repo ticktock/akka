@@ -4,6 +4,8 @@ import org.scalatest.matchers.MustMatchers
 import akka.cluster.coordination._
 import java.util.concurrent.{ TimeUnit, CountDownLatch }
 import akka.cluster.storage.{ BadVersionException, DataExistsException }
+import PostgresCoordinationClient._
+import resource._
 
 class PostgresCoordinationSpec extends WordSpec with MustMatchers {
 
@@ -22,14 +24,14 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       evaluating(client.create(path, path)) must produce[DataExistsException]
     }
 
-    "must check existence properly" in {
+    "check existence properly" in {
       val path = stampedPath("/path/to/exists")
       client.exists(path) must be(false)
       client.createPath(path)
       client.exists(path) must be(true)
     }
 
-    "must update data successfully" in {
+    "update data successfully" in {
       val path = stampedPath("/path/to/update")
       client.create(path, path)
       val (rpath, version) = client.readWithVersion[String](path)
@@ -46,7 +48,7 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       evaluating(client.update(path, updated, version - 1)) must produce[BadVersionException]
     }  */
 
-    "must force update data successfully" in {
+    "force update data successfully" in {
       val path = stampedPath("/path/to/force/update")
       client.create(path, path)
       val (rpath, version) = client.readWithVersion[String](path)
@@ -56,7 +58,7 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.readData(path).version must be(version + 1)
     }
 
-    "must delete data successfully" in {
+    "delete data successfully" in {
       val path = stampedPath("/path/to/force/update")
       client.create(path, path)
       client.exists(path) must be(true)
@@ -77,7 +79,6 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.create(path + "/bar", "baz")
       client.delete(path + "/bar")
       latch.await(2, TimeUnit.SECONDS) must be(true)
-
     }
 
     "succesfully unlisten" in {
@@ -94,6 +95,33 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.create(path + "/bar", "baz")
       client.delete(path + "/bar")
       latch.await(1, TimeUnit.SECONDS) must be(false)
+    }
+
+    "successfully timeout ephemerals and delete ephemerals on close" in {
+      val path = stampedPath("/path/to/ephemeral/timeout")
+
+      managed(new PostgresCoordinationClient).acquireAndGet { client2 ⇒
+        {
+          (client2.coordActor ? Insert(path, null, EPHEMERAL, EphemeralTimeout("1 sec"))).as[Return[String]].get.fold(es ⇒ throw es.head, s ⇒ s)
+          client.exists(path) must be(true);
+          Thread.sleep(1000)
+          client.createPath(path + "123")
+          //should timeout the ephemeral
+          client.exists(path) must be(false)
+          client2.createEphemeralPath(path)
+          client.exists(path) must be(true)
+        }
+      }
+      client.exists(path) must be(false)
+    }
+
+    "create ephemeral sequentials correctly" in {
+      val path = stampedPath("/path/to/ephemeral/sequential")
+      val one = client.createEphemeralSequential(path, "foo")
+      println("one " + one)
+      one.endsWith("_0000000001") must be(true)
+      val two = client.createEphemeralSequential(path, "foo")
+      two.endsWith("_0000000002") must be(true)
     }
 
     "succesfully unlisten all" in {
