@@ -134,8 +134,7 @@ class PostgresClient(conn: PGConn, coordinationActor: ActorRef) {
     import stmt._
     setString(1, r.path)
     managed(executeQuery()).acquireAndGet { rs ⇒
-      rs.next()
-      new VersionedData(rs.getBytes(1), rs.getLong(2))
+      if (rs.next()) new VersionedData(rs.getBytes(1), rs.getLong(2)) else throw CoordinationClient.readDataFailedMissingData(r.path, null)
     }
   }
 
@@ -368,10 +367,8 @@ class PostgresCoordinationClient extends CoordinationClient {
   }
 
   private def writeDataFailed(key: String): ToStorageException = {
-    case e: SQLException if false ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
-    case e: SQLException if false ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
-    case e: SQLException if false ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
-
+    case e: PSQLException if e.getSQLState.equals("2F002") ⇒ CoordinationClient.writeDataFailedBadVersion(key, e)
+    case e: PSQLException if e.getSQLState.equals("02000") ⇒ CoordinationClient.writeDataFailedMissingData(key, e)
   }
 
   private def readDataFailed(key: String): ToStorageException = {

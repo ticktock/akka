@@ -3,9 +3,9 @@ import org.scalatest.WordSpec
 import org.scalatest.matchers.MustMatchers
 import akka.cluster.coordination._
 import java.util.concurrent.{ TimeUnit, CountDownLatch }
-import akka.cluster.storage.{ BadVersionException, DataExistsException }
 import PostgresCoordinationClient._
 import resource._
+import akka.cluster.storage.{ MissingDataException, BadVersionException, DataExistsException }
 
 class PostgresCoordinationSpec extends WordSpec with MustMatchers {
 
@@ -40,13 +40,29 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
       client.read[String](path) must be(updated)
     }
 
-    /*"must throw a BadVersionException" in {
+    "throw a BadVersionException when updating with the wrong version" in {
       val path = stampedPath("/path/to/update/badversion")
       client.create(path, path)
       val (rpath, version) = client.readWithVersion[String](path)
       val updated = stampedPath(path)
       evaluating(client.update(path, updated, version - 1)) must produce[BadVersionException]
-    }  */
+    }
+
+    "throw a MissingDataException when updating non existent path" in {
+      val path = stampedPath("/path/to/update/missingdata")
+      evaluating {
+        client.update(path, path, 2)
+      } must produce[MissingDataException]
+      evaluating(client.forceUpdate(path, path)) must produce[MissingDataException]
+    }
+
+    "throw a MissingDataException when reading non existent path" in {
+      val path = stampedPath("/path/to/read/missingdata")
+      evaluating {
+        client.readData(path)
+      } must produce[MissingDataException]
+
+    }
 
     "force update data successfully" in {
       val path = stampedPath("/path/to/force/update")
@@ -118,7 +134,6 @@ class PostgresCoordinationSpec extends WordSpec with MustMatchers {
     "create ephemeral sequentials correctly" in {
       val path = stampedPath("/path/to/ephemeral/sequential")
       val one = client.createEphemeralSequential(path, "foo")
-      println("one " + one)
       one.endsWith("_0000000001") must be(true)
       val two = client.createEphemeralSequential(path, "foo")
       two.endsWith("_0000000002") must be(true)
