@@ -68,12 +68,13 @@ DECLARE
     _ver bigint;
 BEGIN
     SELECT version  FROM AKKA_COORDINATION  where path = _path FOR UPDATE into _ver;
+    IF NOT FOUND THEN 
+        RAISE SQLSTATE '02000' USING MESSAGE = 'Missing Data for ' || _path;
+    END IF;
     IF(_curr != NULL OR _curr != _ver) THEN
-        RAISE SQLSTATE '2F002' USING MESSAGE 'Bad Version Specified for ' || _path;
+        RAISE SQLSTATE '2F002' USING MESSAGE = 'Bad Version Specified for ' || _path;
     END IF;
-    IF(_ver = NULL) THEN 
-        RAISE SQLSTATE '02000' USNING MESSAGE 'Missing Data for ' || _path;
-    END IF;
+    
     UPDATE AKKA_COORDINATION SET VALUE = _val, VERSION = _ver + 1 where PATH = _path;
     RETURN _ver;
 END;
